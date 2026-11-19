@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:pi42.RoadTripAssist}",
+            "name": "Debug RoadTripAssist",
+            "target": "RoadTripAssist",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug RoadTripAssist"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:pi42.RoadTripAssist}",
+            "name": "Release RoadTripAssist",
+            "target": "RoadTripAssist",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release RoadTripAssist"
+        }
+    ]
+}

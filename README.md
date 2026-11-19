@@ -17,15 +17,32 @@ Run the optimizer tests with:
 swift test
 ```
 
+The optional live benchmarks send public city-center coordinates to Apple and
+report the time to the first street route and to the optimized result. Run them
+individually:
+
+```sh
+ROADTRIP_LIVE_MAPKIT=1 swift test --filter testLiveBayreuthOsloProgress
+ROADTRIP_LIVE_MAPKIT=1 swift test --filter testLiveBayreuthMilanProgress
+```
+
+The Bayreuth–Milan benchmark visits Prague, Innsbruck, Salzburg, Passau,
+Garmisch-Partenkirchen, and Bolzano before reaching Milan.
+
 ## Prototype scope and limitations
 
 - Search, map display, and driving directions use Apple MapKit and require an
   internet connection. Search text and route coordinates are sent to Apple.
-- Before calculating a route, the app shows how many individual directions
-  requests it will make. Requests are sequential; MapKit may throttle them.
-- Intermediate stops are ordered using an exact dynamic-programming optimizer,
-  with start and destination fixed. The prototype solver supports up to 18
-  intermediate stops, but the MapKit request count grows quadratically and may
-  become impractical much earlier.
+- Select start and destination first, then add intermediate stops. The list
+  initially orders them by straight-line distance (an insertion heuristic for
+  more than ten stops).
+- Opt into automatic routing to see the first street route in the provisional
+  order, then review and accept a faster order when one is found. The app
+  groups rapid edits, shows progress, and lets you pause requests.
+- The optimizer reuses directed legs between unchanged waypoints in memory
+  while the planner is open. A fresh five-stop plan needs six MapKit requests
+  for its first street route and 30 for exact optimization. MapKit may throttle
+  requests. Above 18 intermediate stops only the provisional street route is
+  calculated.
 - Trips are not persisted. Etappen, photos, navigation handoff, external
   routing-provider comparisons, and HTML export are not implemented yet.

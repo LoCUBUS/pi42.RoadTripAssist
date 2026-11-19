@@ -20,11 +20,11 @@ struct TripPlannerView: View {
         .frame(minWidth: 1000, minHeight: 650)
         .alert("Fahrzeit mit Apple MapKit berechnen?", isPresented: $showRoutingConfirmation) {
             Button("Abbrechen", role: .cancel) {}
-            Button("Fortfahren") {
-                model.optimizeRoute()
+            Button("Aktivieren") {
+                model.enableAutomaticRouting()
             }
         } message: {
-            Text("Für die Optimierung werden \(model.routingRequestCount) einzelne Routenanfragen an Apple gesendet. Die Zwischenstopp-Koordinaten verlassen dabei den Mac.")
+            Text("Nach Änderungen an den Wegpunkten berechnet MapKit automatisch eine Straßenroute und prüft andere Reihenfolgen. Dabei werden Koordinaten an Apple gesendet. Du kannst die Berechnung jederzeit pausieren.")
         }
     }
 
@@ -47,8 +47,8 @@ struct TripPlannerView: View {
 
     private var mapView: some View {
         Map(position: $cameraPosition) {
-            if !model.routeCoordinates.isEmpty {
-                MapPolyline(coordinates: model.routeCoordinates)
+            if let route = model.roadPreview {
+                MapPolyline(coordinates: route.coordinates)
                     .stroke(.blue, lineWidth: 4)
             }
             ForEach(model.orderedWaypoints) { stop in
@@ -60,6 +60,9 @@ struct TripPlannerView: View {
             }
         }
         .mapStyle(.standard(elevation: .realistic))
+        .onChange(of: model.roadPreview != nil) { _, hasPreview in
+            if hasPreview { cameraPosition = .automatic }
+        }
     }
 
     private var routeSidebar: some View {
@@ -99,14 +102,17 @@ struct TripPlannerView: View {
                                         model.setStart(result)
                                         focusMap(on: result)
                                     }
+                                    .disabled(!model.canUseAsStart(result))
                                     Button("+ Stopp") {
                                         model.addStop(result)
                                         focusMap(on: result)
                                     }
+                                    .disabled(!model.hasEndpoints || model.orderedWaypoints.contains(result))
                                     Button("Ziel") {
                                         model.setDestination(result)
                                         focusMap(on: result)
                                     }
+                                    .disabled(!model.canUseAsDestination(result))
                                 }
                                 .buttonStyle(.borderless)
                                 .controlSize(.small)
@@ -117,7 +123,7 @@ struct TripPlannerView: View {
                 }
 
                 Section("Wegpunkte") {
-                    if let start = model.orderedWaypoints.first {
+                    if let start = model.start {
                         Label("Start: \(start.name)", systemImage: "1.circle")
                     } else {
                         Text("Start nicht festgelegt")
@@ -153,25 +159,49 @@ struct TripPlannerView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack {
-                Button {
-                    showRoutingConfirmation = true
-                } label: {
-                    if model.isOptimizing {
-                        ProgressView()
-                            .controlSize(.small)
+            VStack(alignment: .leading, spacing: 8) {
+                if model.hasEndpoints {
+                    if model.isProvisional {
+                        Text("Vorläufige Reihenfolge nach Luftlinie")
+                    }
+                    if let preview = model.roadPreview {
+                        Text("Geschätzte Fahrzeit: \(formatDuration(preview.duration))")
+                    }
+                    if let proposal = model.suggestion {
+                        Text("Vorschlag: \(proposal.orderedStops.map(\.name).joined(separator: " → "))")
+                        if let preview = model.roadPreview {
+                            Text("Ca. \(formatDuration(preview.duration - proposal.duration)) weniger Fahrzeit")
+                        } else {
+                            Text("Geschätzte Fahrzeit: \(formatDuration(proposal.duration))")
+                        }
+                        Button("Vorschlag übernehmen", action: model.acceptSuggestion)
+                    }
+                } else {
+                    Text("Zuerst Start und Ziel wählen, dann Zwischenstädte hinzufügen.")
+                }
+                if model.isOptimizing {
+                    if model.totalRequests > 0 {
+                        ProgressView(value: Double(model.completedRequests), total: Double(model.totalRequests)) {
+                            Text("MapKit: \(model.completedRequests) / \(model.totalRequests) neue Streckenabschnitte")
+                        }
                     } else {
-                        Text("Fahrzeit berechnen")
+                        ProgressView("Route wird vorbereitet …")
                     }
                 }
-                .disabled(model.start == nil || model.destination == nil || model.isOptimizing)
-
-                if let duration = model.routeDuration {
-                    Text(formatDuration(duration))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if let error = model.routingError {
+                    Text(error).foregroundStyle(.red)
+                    Button("Erneut versuchen", action: model.enableAutomaticRouting)
+                }
+                if model.automaticRouting {
+                    Button("Automatische Berechnung pausieren", action: model.pauseRouting)
+                } else {
+                    Button("Automatische Berechnung aktivieren") {
+                        showRoutingConfirmation = true
+                    }
+                    .disabled(!model.hasEndpoints)
                 }
             }
+            .font(.caption)
             .padding(.horizontal)
             .padding(.bottom)
         }

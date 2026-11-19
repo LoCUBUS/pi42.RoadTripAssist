@@ -71,6 +71,7 @@ enum RouteOptimizer {
         }
 
         for mask in 1..<stateCount {
+            if mask.isMultiple(of: 256) { try Task.checkCancellation() }
             for last in 0..<stopCount where mask & (1 << last) != 0 {
                 let currentCost = costs[mask][last]
                 guard currentCost.isFinite else { continue }

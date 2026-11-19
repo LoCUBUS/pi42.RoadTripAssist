@@ -1,0 +1,36 @@
+Ich möchte eine macOS Applikation erstellen, mit der man Road Trips planen kann. 
+
+Im ersten Schritt soll eine grobe Planung erfolgen. Dazu soll Start und Ziel gewählt werden. Das kann über die Karte oder oder über Textfelder (Suchfelder). Start und Ziel können Städte oder konkrete Punkte sein.
+
+Im zweiten Schritt sollen weitere Städte auf der Strecke hinzugefügt werden. Das soll hauptsächlich über Textfelder passieren. Auch hier sind es vorzugsweise Städte. Die Anordnung soll so geschehen, dass die kürzeste Route zwischen den angegebenen Städten entsteht.
+
+Im 3. Schritt können feste POIs auf der Strecke festgelegt werden. Die hauptsächliche Auswahl erfolgt nun über die Karte. POIs können angeklickt werden und man sieht die Informationen aus Apple Maps. Dann kann der POI hinzugefügt werden. Wird ein POI in einer einstellbaren Distanz zu einer aufgelisteten Stadt gewählt, dann verschwindet die Stadt aus der Liste. Am Ende sollen nur konkrete Wegpunkte in der Routenliste sein. Auch Start und Ziel müssen durch konkrete POIs ersetzt werden. Für jeden POI soll eine geschätzte Verweilzeit angegeben werden.
+
+Im 4. Schritt soll die App helfen die einzelnen Etappen zu planen. Dazu soll die Fahrzeit und die geschätzte Verweilzeit zusammen die Etappenzeit ergeben. Die Etappenzeit kann einmal als Ziel angegeben werden, kann aber auch vom Nutzer für die jeweilige Etappe festgelegt werden. Am Ende jeder Etappe muss der Nutzer einen Übernachtungs-POI festlegen. 
+
+Im 5. Schritt sind alle Etappen geplant und der Nutzer kann diese als separate Routen anzeigen. Jeweils das nächste POI kann dann an Apple Maps als neues Ziel übertragen werden. Jedes POI kann dabei direkt übertragen werden, falls sich Nutzer entscheiden ein POI zu überspringen.
+
+Im 6. Schritt kann die Route abgearbeitet werden. Zu jedem POI können Texte angeheftet werden und eine Bewertung abgegeben werden. 
+
+Im 7. Schritt kann der Nutzer Fotos aus seiner Foto Mediathek oder einer andere Quelle hinzufügen. Die Fotos werden, anhand er Geo-Tags dem Routenverlauf zugeordnet und sind auf der Karte dargestellt. Fotos können dann POIs in der Nähe oder der Fahrt zwischen zwei POIs zugeordnet werden. Auch hier kann Text hinzugefügt oder entfernt werdne.
+
+Im 8. Schritt können die einzelnen Etappen als htm Dashboard exportiert werden. Alle zusätzlichen Informationen wie Fotos und Texte werden darin angezeigt. Das ganze dient als eine Art Reisetagebuch.
+
+
+Das Layout soll dreispaltig sein:
+1. Spalte links Auswahl und verwaltung der angelegte Roadtrips. mit Funktion sie zu löschen, neue hinzuzufügen oder die Namen und Beschreibung zu ändern.
+2. Spalte Mitte ist die Kartenansicht. Sie ist die größte Spalte
+3. Spalte rechts ist die Arbeitsansicht, hier wird die Route und ihre Zwischenschritte angezeigt.
+Start und Ziel sind immer am Anfang und am Ende der Liste. Alle Zwischenschritte sind chronologisch aufgelistet.
+
+Analysiere das ganze bitte und Stelle einen Plan auf, wie man das implementieren kann. Stelle Rückfragen, wenn nötig und erstell eauch ein paar Entwürfe, wie das Layout und die UX aussehen kann.
+
+
+Fragen Beantworten
+1. Nur macOS. 
+2. Apple Maps wäre mein erster Gedanke. Aber gerne weitere Optionen prüfen und diskutieren
+3. Kürzeste Fahrzeit. Und ja, die App soll bitte die Zwischenschritte in die Optimale Reihenfolge bringen.
+4. Stelle einen Implementierungsplan entsprechend deines Vorschlags auf.
+5. Zunächst lokal.
+6. Nach deinem Vorschlag.
+7. Offline nutzbar. Übersichtsseite und Unterseiten pro Etappe. Mit Media Ordner.
