@@ -1,0 +1,105 @@
+import CoreLocation
+import XCTest
+@testable import RoadTripAssist
+
+final class TripLibraryTests: XCTestCase {
+    @MainActor
+    func testTripsAndOrderedWaypointsSurviveReopeningAndStaySeparate() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "data/trips.json"))
+        let start = stop("Start", longitude: 0)
+        let first = stop("Erster Halt", longitude: 1)
+        let second = stop("Zweiter Halt", longitude: 2)
+        let destination = stop("Ziel", longitude: 3)
+        let fasterPairs = [[start, second], [second, first], [first, destination]]
+        let planner = TripPlannerViewModel(routeService: MapKitRouteService { from, to in
+            RouteLeg(duration: fasterPairs.contains([from, to]) ? 1 : 10, coordinates: [])
+        })
+        let library = TripLibrary(store: store, planner: planner)
+        XCTAssertNil(library.loadError)
+        XCTAssertTrue(library.trips.isEmpty)
+        library.updateTrip(id: nil, name: "Tour", notes: "")
+        let tourID = try XCTUnwrap(library.selectedID)
+        library.updateTrip(id: tourID, name: "  Alpen  ", notes: "Über die Alpen")
+
+        library.planner.setStart(start)
+        library.planner.setDestination(destination)
+        library.planner.addStop(second)
+        library.planner.addStop(first)
+        XCTAssertEqual(library.planner.stops, [first, second])
+        library.planner.enableAutomaticRouting()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while library.planner.isOptimizing && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(library.planner.suggestion?.orderedStops, [second, first])
+        library.planner.acceptSuggestion()
+        library.updateTrip(id: nil, name: "Küste", notes: "")
+        let coastID = try XCTUnwrap(library.selectedID)
+        XCTAssertTrue(library.planner.orderedWaypoints.isEmpty)
+        XCTAssertFalse(library.planner.automaticRouting)
+        XCTAssertNil(library.planner.roadPreview)
+        let coastStart = stop("Küste", longitude: 5)
+        library.planner.setStart(coastStart)
+        XCTAssertNil(library.saveError)
+
+        let reopened = TripLibrary(store: store)
+        XCTAssertEqual(reopened.selectedID, tourID)
+        XCTAssertEqual(reopened.selectedTrip?.name, "Alpen")
+        XCTAssertEqual(reopened.selectedTrip?.notes, "Über die Alpen")
+        XCTAssertEqual(reopened.planner.orderedWaypoints, [start, second, first, destination])
+        XCTAssertEqual(reopened.planner.stops.map { $0.coordinate.longitude }, [2, 1])
+        XCTAssertFalse(reopened.planner.automaticRouting)
+        reopened.select(coastID)
+        XCTAssertEqual(reopened.planner.orderedWaypoints, [coastStart])
+
+        reopened.delete(coastID)
+        XCTAssertEqual(reopened.selectedID, tourID)
+        XCTAssertEqual(reopened.planner.orderedWaypoints, [start, second, first, destination])
+        XCTAssertEqual(try store.load().map(\.id), [tourID])
+    }
+
+    @MainActor
+    func testUnreadableArchiveIsNotOverwritten() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let brokenArchive = Data("invalid JSON".utf8)
+        try brokenArchive.write(to: store.url)
+
+        let library = TripLibrary(store: store)
+        XCTAssertNotNil(library.loadError)
+        library.updateTrip(id: nil, name: "Neue Reise", notes: "")
+        XCTAssertTrue(library.trips.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: store.url), brokenArchive)
+    }
+
+    @MainActor
+    func testSaveFailureCanBeRetriedWithoutLosingChanges() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let library = TripLibrary(store: store)
+        try FileManager.default.createDirectory(at: store.url, withIntermediateDirectories: false)
+
+        library.updateTrip(id: nil, name: "Tour", notes: "")
+        XCTAssertNotNil(library.saveError)
+        XCTAssertEqual(library.selectedTrip?.name, "Tour")
+
+        try FileManager.default.removeItem(at: store.url)
+        library.save()
+        XCTAssertNil(library.saveError)
+        XCTAssertEqual(try store.load().map(\.name), ["Tour"])
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        return directory
+    }
+
+    private func stop(_ name: String, longitude: Double) -> RoadStop {
+        RoadStop(name: name, subtitle: "", coordinate: .init(latitude: 0, longitude: longitude))
+    }
+}

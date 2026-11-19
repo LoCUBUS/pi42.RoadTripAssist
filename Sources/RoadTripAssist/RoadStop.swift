@@ -1,10 +1,23 @@
 import CoreLocation
 
-struct RoadStop: Identifiable, Equatable {
-    let id = UUID()
+struct RoadStop: Identifiable, Equatable, Codable {
+    let id: UUID
     let name: String
     let subtitle: String
-    let coordinate: CLLocationCoordinate2D
+    private let latitude: Double
+    private let longitude: Double
+
+    init(name: String, subtitle: String, coordinate: CLLocationCoordinate2D) {
+        id = UUID()
+        self.name = name
+        self.subtitle = subtitle
+        latitude = coordinate.latitude
+        longitude = coordinate.longitude
+    }
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
 
     static func == (lhs: RoadStop, rhs: RoadStop) -> Bool {
         lhs.id == rhs.id

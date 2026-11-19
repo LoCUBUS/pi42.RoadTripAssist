@@ -14,6 +14,7 @@ final class ProgressiveRoutingTests: XCTestCase {
         XCTAssertEqual(provisional, [a, b])
 
         var requests: [String] = []
+        var steps: [RouteCalculationStep] = []
         let fasterPairs = ["Start-B", "B-A", "A-Ziel"]
         let service = MapKitRouteService { from, to in
             let pair = "\(from.name)-\(to.name)"
@@ -26,9 +27,14 @@ final class ProgressiveRoutingTests: XCTestCase {
                 XCTAssertEqual(requests, ["Start-A", "A-B", "B-Ziel"])
                 XCTAssertEqual(preview?.orderedStops, [a, b])
                 XCTAssertEqual(preview?.duration, 30)
+                XCTAssertEqual(steps, (0...3).map { .streetRoute(done: $0, total: 3) })
             },
-            onProgress: { _, _ in }
+            onProgress: { _, _ in },
+            onStep: { steps.append($0) }
         )
+        XCTAssertEqual(steps, (0...3).map { .streetRoute(done: $0, total: 3) }
+                       + (0...3).map { .alternativeLegs(done: $0, total: 3) }
+                       + [.comparingOrders])
         XCTAssertEqual(requests.count, 6)
         XCTAssertEqual(optimized.orderedStops, [b, a])
         XCTAssertEqual(optimized.duration, 3)
@@ -47,16 +53,27 @@ final class ProgressiveRoutingTests: XCTestCase {
         _ = try await service.planRoute(start: start, stops: Array(stops.prefix(4)), destination: end,
                                         onPreview: { _ in }, onProgress: { _, _ in })
         XCTAssertEqual(requests, 20)
+        var steps: [RouteCalculationStep] = []
         let result = try await service.planRoute(
             start: start, stops: stops, destination: end,
             onPreview: { preview in
                 XCTAssertEqual(preview?.orderedStops, stops)
                 XCTAssertEqual(requests, 22)
             },
-            onProgress: { _, total in XCTAssertEqual(total, 10) }
+            onProgress: { _, total in XCTAssertEqual(total, 10) },
+            onStep: { steps.append($0) }
         )
         XCTAssertEqual(requests, 30)
         XCTAssertEqual(result.duration, 6)
+        XCTAssertEqual(steps.first, .streetRoute(done: 0, total: 2))
+        XCTAssertTrue(steps.contains(.alternativeLegs(done: 0, total: 8)))
+
+        steps.removeAll()
+        _ = try await service.planRoute(start: start, stops: stops, destination: end,
+                                        onPreview: { XCTAssertNotNil($0) },
+                                        onProgress: { _, total in XCTAssertEqual(total, 0) },
+                                        onStep: { steps.append($0) })
+        XCTAssertEqual(steps, [.comparingOrders])
     }
 
     @MainActor
@@ -79,17 +96,88 @@ final class ProgressiveRoutingTests: XCTestCase {
 
         model.enableAutomaticRouting()
         model.pauseRouting()
+        XCTAssertEqual(model.routeStatus, .paused)
         model.enableAutomaticRouting()
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
         while model.isOptimizing && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(model.suggestion?.orderedStops, [b, a])
+        XCTAssertEqual(model.routeStatus, .finished)
         XCTAssertEqual(model.stops, [a, b])
         model.acceptSuggestion()
         XCTAssertEqual(model.stops, [b, a])
         XCTAssertEqual(model.roadPreview?.duration, 3)
         XCTAssertNil(model.suggestion)
+    }
+
+    @MainActor
+    func testInlineSearchDebouncesTypingAndDoesNotReplaceWaypointUntilSelection() async throws {
+        let current = stop("Bayreuth", 49.94, 11.58)
+        let result = stop("Berlin", 52.52, 13.40)
+        var queries: [String] = []
+        let model = TripPlannerViewModel(findPlaces: { query in
+            queries.append(query)
+            return [result]
+        })
+        model.setStart(current)
+        model.updateSearch("Be", in: .start)
+        model.updateSearch("Ber", in: .start)
+        model.updateSearch("Berlin", in: .start)
+        try await waitForSearch(model)
+
+        XCTAssertEqual(queries, ["Berlin"])
+        XCTAssertEqual(model.start, current)
+        XCTAssertFalse(model.chooseSearchResult(result, in: .destination))
+        XCTAssertTrue(model.chooseSearchResult(result, in: .start))
+        XCTAssertEqual(model.start, result)
+        XCTAssertEqual(model.fieldText(.start), "Berlin")
+    }
+
+    @MainActor
+    func testSwitchingFieldsDiscardsPreviousSearchAndCanAddIntermediateStop() async throws {
+        let start = stop("Bayreuth", 49.94, 11.58)
+        let destination = stop("Mailand", 45.46, 9.19)
+        let middle = stop("Innsbruck", 47.27, 11.40)
+        let replacement = stop("Bozen", 46.50, 11.35)
+        let oldSearchStarted = expectation(description: "Previous search started")
+        let model = TripPlannerViewModel(findPlaces: { query in
+            switch query {
+            case "Alter Treffer":
+                oldSearchStarted.fulfill()
+                try? await Task.sleep(for: .seconds(2))
+                return [start]
+            case "Mailand": return [destination]
+            case "Innsbruck": return [middle]
+            default: return [replacement]
+            }
+        })
+        model.setStart(start)
+        model.updateSearch("Alter Treffer", in: .start)
+        await fulfillment(of: [oldSearchStarted], timeout: 2)
+        model.updateSearch("Mailand", in: .destination)
+        try await waitForSearch(model)
+        XCTAssertEqual(model.searchResults, [destination])
+        XCTAssertTrue(model.chooseSearchResult(destination, in: .destination))
+        XCTAssertEqual(model.start, start)
+        XCTAssertEqual(model.destination, destination)
+
+        model.updateSearch("Innsbruck", in: .newStop)
+        try await waitForSearch(model)
+        XCTAssertTrue(model.chooseSearchResult(middle, in: .newStop))
+        model.updateSearch("Bozen", in: .stop(middle.id))
+        try await waitForSearch(model)
+        XCTAssertTrue(model.chooseSearchResult(replacement, in: .stop(middle.id)))
+        XCTAssertEqual(model.orderedWaypoints, [start, replacement, destination])
+    }
+
+    @MainActor
+    private func waitForSearch(_ model: TripPlannerViewModel) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while model.isSearching && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(model.isSearching)
     }
 
     @MainActor

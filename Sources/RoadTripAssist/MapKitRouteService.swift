@@ -12,6 +12,12 @@ struct PlannedRoute {
     let coordinates: [CLLocationCoordinate2D]
 }
 
+enum RouteCalculationStep: Equatable {
+    case streetRoute(done: Int, total: Int)
+    case alternativeLegs(done: Int, total: Int)
+    case comparingOrders
+}
+
 @MainActor
 final class MapKitRouteService {
     private struct Pair: Hashable {
@@ -41,7 +47,20 @@ final class MapKitRouteService {
         request.naturalLanguageQuery = query
         request.resultTypes = [.pointOfInterest, .address]
 
-        let response = try await MKLocalSearch(request: request).start()
+        let search = MKLocalSearch(request: request)
+        let response: MKLocalSearch.Response
+        do {
+            response = try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await search.start()
+            } onCancel: {
+                Task { @MainActor in search.cancel() }
+            }
+        } catch {
+            try Task.checkCancellation()
+            if (error as? MKError)?.code == .placemarkNotFound { return [] }
+            throw error
+        }
         return response.mapItems.compactMap { item in
             guard let name = item.name else { return nil }
             return RoadStop(
@@ -57,7 +76,8 @@ final class MapKitRouteService {
         stops: [RoadStop],
         destination: RoadStop,
         onPreview: (PlannedRoute?) -> Void,
-        onProgress: (Int, Int) -> Void
+        onProgress: (Int, Int) -> Void,
+        onStep: (RouteCalculationStep) -> Void = { _ in }
     ) async throws -> PlannedRoute {
         try Task.checkCancellation()
         let locations = [start] + stops + [destination]
@@ -86,23 +106,33 @@ final class MapKitRouteService {
         var fetched = 0
         onProgress(fetched, missingCount)
 
-        for (index, pair) in allPairs.enumerated() {
-            try Task.checkCancellation()
-            if legs[pair] == nil, let from = stopsByID[pair.from], let to = stopsByID[pair.to] {
+        func loadLegs(_ pairs: [Pair], step: (Int, Int) -> RouteCalculationStep) async throws {
+            let pending = pairs.filter { legs[$0] == nil }
+            guard !pending.isEmpty else { return }
+            onStep(step(0, pending.count))
+            for (index, pair) in pending.enumerated() {
+                try Task.checkCancellation()
+                guard let from = stopsByID[pair.from], let to = stopsByID[pair.to] else {
+                    throw RouteOptimizationError.invalidStopIndices
+                }
                 let leg = try await fetchLeg(from, to)
                 try Task.checkCancellation()
                 legs[pair] = leg.map(CachedLeg.available) ?? .unavailable
                 fetched += 1
                 onProgress(fetched, missingCount)
-            }
-            if index + 1 == previewPairs.count {
-                onPreview(route(for: locations))
+                onStep(step(index + 1, pending.count))
             }
         }
+
+        try await loadLegs(previewPairs, step: RouteCalculationStep.streetRoute(done:total:))
+        onPreview(route(for: locations))
 
         guard supportsExactOptimization else {
             throw RouteOptimizationError.tooManyStops(stops.count)
         }
+        try await loadLegs(extraPairs, step: RouteCalculationStep.alternativeLegs(done:total:))
+        if !stops.isEmpty { onStep(.comparingOrders) }
+
         let matrix = locations.map { from in
             locations.map { to in
                 legs[Pair(from: from.id, to: to.id)]?.route?.duration ?? .infinity
