@@ -23,6 +23,23 @@ struct RoadStop: Identifiable, Equatable, Codable {
         lhs.id == rhs.id
     }
 
+    func distance(to other: RoadStop) -> CLLocationDistance {
+        CLLocation(latitude: latitude, longitude: longitude)
+            .distance(from: CLLocation(latitude: other.latitude, longitude: other.longitude))
+    }
+
+    func matchesMapPlace(_ other: RoadStop) -> Bool {
+        self == other || (name.compare(other.name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                          && distance(to: other) < 50)
+    }
+
+    static func bestInsertionIndex(for stop: RoadStop, along waypoints: [RoadStop]) -> Int {
+        let costs = zip(waypoints, waypoints.dropFirst()).map { from, to in
+            from.distance(to: stop) + stop.distance(to: to) - from.distance(to: to)
+        }
+        return costs.indices.min { costs[$0] < costs[$1] } ?? 0
+    }
+
     static func provisionalOrder(start: RoadStop, stops: [RoadStop], destination: RoadStop) -> [RoadStop] {
         let points = ([start] + stops + [destination]).map {
             CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)

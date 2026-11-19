@@ -1,16 +1,18 @@
-# RoadTripAssist – Implementierungsplan v0.2
+# RoadTripAssist – Implementierungsplan
 
-**Status:** Entwurf auf Basis der Nutzerentscheidungen; noch offen ist insbesondere, über welchen Dienst die automatische Fahrzeit-Optimierung berechnet wird.
+**Aktueller Stand:** Phasen 0–2 sind für den Prototyp umgesetzt: lokale Reisen, Ortssuche und POI-Auswahl auf der Karte, Straßenroute mit Fahrzeit und Strecke, manuelle Sortierung, Optimierungsvorschläge und Übergabe eines einzelnen Wegpunkts an Apple Karten. Die Kernabläufe sind automatisiert getestet.
+
+**Als Nächstes:** Phase 3 – Etappenplanung. Der Google-/Mapbox-Livevergleich ist auf Phase 7 verschoben und blockiert die Etappenplanung nicht. Vor Veröffentlichung bleibt die Prüfung der Apple-Vorgaben für alternative Routenanfragen und den Cache offen.
 
 ## 1. Bestätigte Anforderungen
 
 - Native Anwendung ausschließlich für **macOS**.
 - Apple Maps/MapKit ist der naheliegende Ausgangspunkt, aber Alternativen sollen vor Festlegung geprüft werden.
-- Die Optimierung soll die **Fahrzeit** minimieren und die Zwischenstopps automatisch in eine passende Reihenfolge bringen.
+- Die Optimierung soll die **geschätzte Fahrzeit** minimieren und eine passende Reihenfolge der Zwischenstopps vorschlagen. Ein Fahrzeitvorschlag wird erst nach Bestätigung übernommen.
 - **Start und Ziel bleiben fest**; optimiert wird die Reihenfolge der Zwischenstopps.
 - Erste nutzbare Version: Reisen verwalten, Route und POIs planen, Karte anzeigen und ein Ziel an Apple Maps übergeben. Etappen, Tagebuch und Export folgen danach.
 - Reisedaten zunächst lokal auf dem Mac.
-- In Phase 0 Google Routes API und Mapbox mit Beispieldaten vergleichen; erst anschließend über einen produktiven externen Routinganbieter und die Übertragung realer Wegpunktkoordinaten entscheiden.
+- Google Routes API und Mapbox erst am Ende mit Beispieldaten praktisch vergleichen; über einen produktiven externen Routinganbieter und die Übertragung realer Wegpunktkoordinaten wird nicht vorher entschieden.
 - Foto-GPS-Zuordnung wird vorgeschlagen, aber vom Nutzer bestätigt, nicht stillschweigend ausgeführt.
 - Der Export muss offline funktionieren: Übersichtsseite, Unterseite je Etappe und separater Medienordner.
 
@@ -27,12 +29,7 @@ Kartenanzeige, POI-Suche, Routenermittlung und Reihenfolgeoptimierung sind verwa
 
 ### Vorläufige Empfehlung
 
-Für eine native macOS-App zuerst **MapKit für Karte, Suche und POI-Auswahl prototypisieren**. Die Fahrzeit-Optimierung nicht vorab als „Apple kann das schon“ einplanen: im Machbarkeitsschritt mit realistischen Stopps vergleichen:
-
-1. MapKit-Routenzeit zwischen Stopppaaren abrufen und die Reihenfolge lokal berechnen.
-2. Google Routes API und Mapbox Optimization API mit denselben Beispieldaten vergleichen.
-
-Danach anhand von Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbedingungen entscheiden. Google ist derzeit die klarste dokumentierte Option für automatisches Sortieren von Wegpunkten; das macht es aber nicht automatisch zur passenden Gesamt-Kartenlösung.
+Der Prototyp verwendet **MapKit für Karte, Suche, POI-Auswahl und Fahrzeiten**. Die Optimierung berechnet die Reihenfolge lokal. In Phase 7 werden Google Routes und Mapbox mit denselben Beispieldaten verglichen; Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbedingungen bestimmen die spätere Anbieterwahl.
 
 **Wichtige Trennung:** „lokal“ beschreibt hier zunächst die Speicherung. Karten- und Routinganfragen benötigen Internet und übertragen Ortskoordinaten an den jeweiligen Anbieter. Falls auch Ortsdaten strikt auf dem Gerät bleiben müssen, ist das eine zusätzliche Anforderung und schränkt die praktikablen Routingoptionen ein.
 
@@ -46,16 +43,42 @@ Danach anhand von Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbed
 - [Mapbox Optimization API v1](https://docs.mapbox.com/api/navigation/optimization-v1/)
 - [Mapbox Maps SDK for iOS](https://docs.mapbox.com/ios/maps/guides/)
 
+### Dokumentationsvergleich (19. November 2026)
+
+| Kriterium | MapKit + lokaler Optimierer | Google Routes API | Mapbox Optimization v1 |
+|---|---|---|---|
+| Reihenfolge | Exaktes Minimum der abgefragten, gerichteten Fahrzeitmatrix bis 18 Zwischenstopps; danach nur Straßenroute in aktueller Reihenfolge. | `optimizeWaypointOrder` optimiert vorrangig Fahrzeit, berücksichtigt auch Entfernung und Abbiegungen. | Dauerbasierte Optimierung mit zusätzlichen Manöver-Strafwerten. |
+| Feste Endpunkte | Start und Ziel sind im lokalen Optimierer fest. | Origin und Destination bleiben fest; Zwischenpunkte dürfen keine `via`-Punkte sein. `TRAFFIC_AWARE_OPTIMAL` ist bei Optimierung nicht erlaubt. | Möglich mit `source=first`, `destination=last`, `roundtrip=false`. |
+| Umfang | Anzahl der MapKit-Anfragen wächst quadratisch; bei fünf/sechs Zwischenstopps 30/42 Anfragen für eine frische vollständige Berechnung. | Bis 25 Zwischenstopps je Anfrage; dokumentiertes Limit 3.000 Anfragen/Minute. | Bis 12 Koordinaten insgesamt, also maximal zehn Zwischenstopps; 300 Anfragen/Minute. |
+| Abrechnung | Native MapKit-Nutzung; konkrete Nutzungsbedingungen und Skalierbarkeit für diesen Anwendungsfall prüfen. | API-Key und aktivierte Abrechnung erforderlich; Optimierung löst Compute Routes Pro aus, mehr als zehn Zwischenstopps können die Abrechnung beeinflussen. [Preise](https://developers.google.com/maps/billing-and-pricing/pricing#routes-pricing) prüfen. | Token erforderlich; Abrechnung pro Anfrage, einschließlich mehrerer Wegpunkte. [Preise und Freikontingente](https://www.mapbox.com/pricing/#optimization-api) prüfen. |
+| Datenschutz und Darstellung | Suchanfragen und Koordinaten gehen an Apple; native Kartenintegration. | Koordinaten gehen an Google; [Routes-Richtlinien](https://developers.google.com/maps/documentation/routes/policies), Speicher- und Darstellungsvorgaben sowie gegebenenfalls EWR-Bedingungen prüfen. | Koordinaten gehen an Mapbox; Nutzungs-, Speicher- und Darstellungsvorgaben sowie gegebenenfalls erforderliche Attribution prüfen. |
+
+Die beiden vorhandenen Beispiele Bayreuth–Oslo (fünf Zwischenstopps) und Bayreuth–Mailand (sechs) passen grundsätzlich in beide externen APIs. Eine Optimierung wäre dort jeweils mit einer Anfrage möglich; das ist **keine gemessene Laufzeit**. Der MapKit-Prototyp benötigte bei früheren Live-Läufen 30 bzw. 42 Anfragen. Google und Mapbox wurden mangels eingerichteter Zugangsdaten nicht live abgefragt; Reihenfolge, Fahrzeit, Laufzeit und tatsächlich entstehende Kosten sind daher noch nicht vergleichbar.
+
+Für den praktischen Vergleich dieselben öffentlichen Stadtkoordinaten, festen Endpunkte und möglichst vergleichbare Fahrprofile verwenden; Ergebnisse und Messzeitpunkt dokumentieren. Vor einem produktiven Einsatz externe Kosten, Datenschutz und Vertragsbedingungen gesondert bewerten. Insbesondere weist [Apple bei MKDirections](https://developer.apple.com/documentation/mapkit/mkdirections.md) darauf hin, Anfragen nur zu stellen, wenn die zugehörigen Routeninformationen angezeigt werden sollen. Die Zulässigkeit der derzeit für den Optimierungsvergleich abgefragten Alternativverbindungen ist deshalb vor einer Produktentscheidung zu prüfen.
+
+**Prüfstand 19. November 2026:** Die App fragt alternative Teilstrecken ab, um eine Reihenfolge zu berechnen; nicht jede abgefragte Teilstrecke wird anschließend angezeigt. Apples Dokumentation klärt nicht eindeutig, ob dieser konkrete Einsatz unter den genannten Hinweis fällt. Das ist keine Freigabe: Vor einer Veröffentlichung bei Apple beziehungsweise anhand der für das Projekt geltenden Entwicklerbedingungen klären; auch die Wiederverwendung der Ergebnisse im Speicher prüfen. Google verlangt laut [Routes-Richtlinien](https://developers.google.com/maps/documentation/routes/policies) unter anderem Beachtung von Speicherbeschränkungen und Attribution; für eine Anzeige auf Apple-Karten sind die jeweils geltenden Bedingungen gesondert zu prüfen.
+
+Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine Vorschau nach etwa 6,2 Sekunden und ein Optimierungsergebnis nach etwa 58,9 Sekunden (7 bzw. 42 Anfragen); die übermittelten Streckenlängen waren positiv. Google- und Mapbox-Livetests bleiben ohne konfigurierte Zugangsdaten offen und können Kosten auslösen.
+
+### Oberflächentests
+
+- XCUITest deckt Reiseanlage, Ortssuche, manuelles Verschieben, Streckenanzeige, Wiederöffnen und Rückkehr zur Luftliniensortierung mit isolierten Testdaten ab.
+- XCUITest prüft auch Treffer und Klicks ohne Treffer in der echten Kartenansicht mit simulierten Suchergebnissen, die Ortsdetails und das Einfügen erst nach Bestätigung. Ein separater MapKit-Livetest prüft, ob die Umgebungssuche Unbound Coffee in Innsbruck liefert.
+- Die Übergabedaten für Zwischenziel und Ziel werden geprüft; der optionale Smoke-Test prüft zusätzlich, dass Apple Karten tatsächlich ein Fenster öffnet. Es wird nicht die gesamte Reise übergeben.
+- Netzwerkfehler und Wiederholung sind mit simulierten Fehlern im Swift-Paket getestet. Kartenkacheln und das Verhalten bei tatsächlich unterbrochener Netzwerkverbindung werden nicht automatisiert geprüft.
+- Startbefehle stehen in der [README](README.md).
+
 ## 3. MVP und Funktionsumfang
 
 ### MVP – durchgängige erste Nutzung
 - Reisen mit Name und Beschreibung anlegen, auswählen, umbenennen und löschen.
 - Start, Ziel und Zwischenstopps suchen und auswählen.
-- Ungefähre Orte in konkrete POIs umwandeln.
+- Konkrete POIs über die Suche wählen oder per Kartenklick als Zwischenziel hinzufügen. Ein bestehender grober Wegpunkt lässt sich über sein Suchfeld ersetzen.
 - Zwischenstopps für minimale **geschätzte Gesamtfahrzeit** sortieren; Start und Ziel bleiben fix.
-- Die optimierte Reihenfolge in Liste und Karte darstellen; Nutzer kann sie übernehmen oder manuell korrigieren.
-- Fahrtzeit/Distanz anzeigen und als Schätzung kennzeichnen.
-- Ein ausgewähltes oder nächstes Ziel an Apple Maps übergeben.
+- Die aktuelle Reihenfolge in Liste und Karte anzeigen; einen schnelleren Vorschlag in der Seitenleiste prüfen, übernehmen oder die Reihenfolge manuell korrigieren. Die Karte zeigt die Vorschlagsroute erst nach Übernahme.
+- Geschätzte Fahrzeit und Strecke der berechneten Straßenroute anzeigen.
+- Einen ausgewählten Wegpunkt an Apple Karten übergeben. Die automatische Auswahl des nächsten Ziels folgt in Phase 3.
 - Reise lokal speichern und nach einem Neustart wieder öffnen.
 
 ### Nach dem MVP
@@ -66,37 +89,35 @@ Danach anhand von Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbed
 
 **Optimierungsannahme für den Start:** Alle Zwischenstopps sind zunächst frei umsortierbar; keine Öffnungszeiten, Zeitfenster, Prioritäten oder Übernachtungszwänge. Wenn Etappen und feste Übernachtungsorte später hinzukommen, werden diese als feste Anker behandelt und nur Stopps innerhalb der jeweiligen Etappe optimiert. Optimierungsergebnisse bleiben überprüfbar und manuell änderbar.
 
-## 4. UX-Entwurf
+## 4. Bedienung und UX-Ziele
 
 ```text
 ┌────────────────────┬───────────────────────────────────┬──────────────────────────┐
 │ Reisen             │                                   │ Reise / Route             │
 │ + Neue Reise       │          Karte + Route             │ Start                     │
-│                    │        nummerierte POIs             │   ↓                      │
+│                    │          Wegpunkte                 │   ↓                      │
 │ Ausgewählte Reise  │                                   │ Stopps (optimierbar)      │
 │                    │                                   │   ↓                      │
 │                    │                                   │ Ziel                      │
 │                    │                                   │                          │
-│                    │                                   │ [Optimieren] [Übernehmen] │
+│                    │                                   │ Fahrzeit / Vorschlag     │
 └────────────────────┴───────────────────────────────────┴──────────────────────────┘
 ```
 
 - Linke Spalte: Reisen und Reiseverwaltung.
-- Mitte: größte Spalte, Karte, Routengeometrie und nummerierte Wegpunkte.
-- Rechte Spalte: chronologische Route, POI-Details, Verweilzeit, Optimierungsvorschau und Etappen.
-- Optimierung zeigt Vorher/Nachher-Reihenfolge und geänderte geschätzte Fahrtzeit. Sie überschreibt Nutzereingaben nicht ohne Bestätigung.
-- Spaltenbreiten sind anpassbar; bei schmalen Fenstern lassen sich Seitenleisten einklappen.
+- Mitte: Karte mit Straßenroute, Wegpunktmarkern und originalen Apple-Kartensymbolen. Ein Kartenklick sucht in einem Radius von höchstens 60 m; die Infobox zeigt den nächsten Treffer zur Bestätigung. Bei keinem Treffer bleibt die Route unverändert.
+- Rechte Spalte: Start, Zwischenziele und Ziel mit direkter Ortssuche, Fortschritt, geschätzter Fahrzeit, Strecke und einem möglichen Vorschlag. Der Vorschlag überschreibt die Route nicht ohne Bestätigung.
+- Nummerierte Kartenmarker, separat einstellbare Spaltenbreiten und einklappbare Seitenleisten sind UX-Ziele, kein aktueller Funktionsumfang. Verweilzeiten und Etappen folgen in Phase 3.
 
 ## 5. Umsetzungsphasen
 
-### Phase 0 – Anbieter- und Optimierungsprobe
+### Phase 0 – MapKit- und Optimierungsprobe
 - Kleine native SwiftUI-/MapKit-Mac-App: Karte, Suche, POI-Auswahl, Route, Apple-Maps-Übergabe.
 - Testmenge von Beispielreisen mit wenigen und mehreren Zwischenstopps erstellen.
 - MapKit-Paaranfragen samt benötigter Anfragezahl/Drosselung messen.
-- Google Routes und Mapbox für dieselben Zwischenstopps hinsichtlich Reihenfolge, Fahrzeit, Grenzen, Kostenmodell, Datenschutz und Kartenbedingungen vergleichen.
-- Entscheidung festhalten: ein Routinganbieter oder MapKit plus externer Optimierungsdienst.
+- Den dokumentationsbasierten Anbietervergleich festhalten; den praktischen Vergleich auf Phase 7 verschieben.
 
-**Ergebnis:** Vergleich und technischer Anbieterentscheid auf Basis von Beispieldaten; produktive Standortdaten werden erst nach separater Bewertung von Routengüte, Kosten, Datenschutz und Nutzungsbedingungen an einen externen Anbieter übertragen. Bestätigte MVP-Grenzen, bevor die Persistenz-/App-Architektur darauf festgelegt wird.
+**Ergebnis:** MapKit-Prototyp und Messungen mit Beispieldaten; eine endgültige Anbieterentscheidung steht aus. Die Apple-Vorgaben zur Verwendung der Alternativanfragen sind vor Veröffentlichung zu klären.
 
 ### Phase 1 – macOS-App und lokale Reisen
 - SwiftUI-Fenster und dreispaltige Navigation.
@@ -105,8 +126,9 @@ Danach anhand von Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbed
 
 ### Phase 2 – Route, Karte und Optimierung (MVP)
 - MapKit-Karte, Orts-/POI-Suche, Start/Ziel und Zwischenstoppliste.
-- Routen- und Fahrzeitberechnung über den in Phase 0 gewählten Weg.
-- Fahrzeit-Optimierung bei festem Start/Ziel und automatisches Sortieren der Zwischenstopps.
+- Native Apple-Kartensymbole; ein Kartenklick sucht in der unmittelbaren Nähe nach einem POI und zeigt einen Treffer mit Ortsdetails zur Bestätigung vor der Übernahme als Zwischenziel.
+- Routen- und Fahrzeitberechnung vorläufig über MapKit.
+- Vorläufige Luftlinien-Sortierung bei festem Start und Ziel; Fahrzeitoptimierung nach Aktivierung als Vorschlag zur Übernahme. Karten-POIs werden bei manueller Reihenfolge so eingefügt, dass die zusätzliche Luftlinie möglichst klein bleibt, ohne bestehende Stopps umzusortieren.
 - Ergebnisvorschau, manuelle Korrektur, Fehler-/Offlinezustände und Apple-Maps-Übergabe.
 
 ### Phase 3 – Etappenplanung und Durchführung
@@ -133,7 +155,15 @@ Danach anhand von Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbed
 - Providerfehler, API-Limits, leere Suchergebnisse und fehlende Berechtigungen sichtbar und handhabbar machen.
 - Hinweise/Dokumentation zu Netzwerkübertragung von Such- und Routendaten, lokaler Fotokopie und Exportmetadaten.
 
-## 6. Datenmodell (Startvorschlag)
+### Phase 7 – Praktischer Vergleich externer Routinganbieter
+- Google Routes und Mapbox mit denselben öffentlichen Beispielreisen hinsichtlich Reihenfolge, Fahrzeit, Grenzen, Kostenmodell, Datenschutz und Kartenbedingungen vergleichen.
+- Entscheidung über einen Routinganbieter oder MapKit plus externen Optimierungsdienst festhalten. Produktive Standortdaten erst nach gesonderter Bewertung an einen externen Anbieter übertragen.
+
+## 6. Datenmodell
+
+**Implementiert:** `RoadTrip` speichert ID, Name und Beschreibung. `TripWaypoints` enthält Start, eine geordnete Liste von Zwischenzielen, Ziel und die manuelle Sortiereinstellung. `RoadStop` speichert ID, Name, Untertitel und Koordinaten. Berechnete Routen und der MapKit-Opt-in werden nicht gespeichert.
+
+**Entwurf für die weitere Entwicklung (keine Beschreibung des aktuellen JSON-Formats):**
 
 - **Trip:** ID, Name, Beschreibung, Zeitstempel.
 - **Waypoint:** ID, Trip-ID, eingegebene und ausgewählte Ortsdaten, Koordinate, Reihenfolge, Rolle, Verweilzeit, Notiz, Bewertung.
@@ -142,7 +172,7 @@ Danach anhand von Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbed
 - **Photo:** lokale App-Mediendatei, Aufnahmedatum, optionale GPS-Metadaten, Beschreibung.
 - **PhotoAssignment:** Foto, Etappe, optionaler POI oder Streckenabschnitt, Zuordnungsstatus (Vorschlag/bestätigt).
 
-## 7. Risiken / Entscheidungen vor Implementierungsstart
+## 7. Risiken und offene Entscheidungen
 
 - Ein Fahrzeit-Optimum hängt vom Routingmodell, Abfahrtszeit und Verkehr ab; es ist ein Anbieterergebnis, kein absolutes Optimum über alle denkbaren Routen.
 - Eine API-Optimierung kann Standortdaten an Dritte übertragen und Kosten erzeugen; Speicherung „lokal“ verhindert das nicht.
@@ -157,4 +187,4 @@ Danach anhand von Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbed
 - Die App berechnet eine Fahrtzeit-basierte Zwischenstopp-Reihenfolge, hält Start/Ziel fest und erläutert, dass es eine Schätzung ist.
 - Nutzer kann die vorgeschlagene Reihenfolge ansehen, übernehmen, manuell ändern und erneut berechnen.
 - Karte, Routenliste und an Apple Maps übergebenes Ziel sind konsistent.
-- Ein Export enthält Übersicht, Etappenseiten und Medien und lässt sich ohne Internetverbindung öffnen.
+- **Phase 5 (offen):** Ein Export enthält Übersicht, Etappenseiten und Medien und lässt sich ohne Internetverbindung öffnen.

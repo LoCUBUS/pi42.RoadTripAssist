@@ -14,7 +14,8 @@ final class TripLibraryTests: XCTestCase {
         let destination = stop("Ziel", longitude: 3)
         let fasterPairs = [[start, second], [second, first], [first, destination]]
         let planner = TripPlannerViewModel(routeService: MapKitRouteService { from, to in
-            RouteLeg(duration: fasterPairs.contains([from, to]) ? 1 : 10, coordinates: [])
+            RouteLeg(duration: fasterPairs.contains([from, to]) ? 1 : 10,
+                     distance: 100, coordinates: [])
         })
         let library = TripLibrary(store: store, planner: planner)
         XCTAssertNil(library.loadError)
@@ -73,6 +74,40 @@ final class TripLibraryTests: XCTestCase {
         library.updateTrip(id: nil, name: "Neue Reise", notes: "")
         XCTAssertTrue(library.trips.isEmpty)
         XCTAssertEqual(try Data(contentsOf: store.url), brokenArchive)
+    }
+
+    @MainActor
+    func testManualOrderPersistsAcrossEditsAndReopening() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let start = stop("Start", longitude: 0)
+        let a = stop("A", longitude: 1)
+        let b = stop("B", longitude: 2)
+        let end = stop("Ziel", longitude: 4)
+        let c = stop("C", longitude: 3)
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Tour", notes: "")
+        library.planner.setStart(start)
+        library.planner.setDestination(end)
+        library.planner.addStop(a)
+        library.planner.addStop(b)
+        library.planner.moveStop(b, by: -1)
+        library.planner.addStop(c)
+        XCTAssertEqual(library.planner.stops, [b, a, c])
+
+        let reopened = TripLibrary(store: store)
+        XCTAssertTrue(reopened.planner.manualOrder)
+        XCTAssertEqual(reopened.planner.stops, [b, a, c])
+        reopened.planner.useProvisionalOrder()
+        XCTAssertEqual(reopened.planner.stops, [a, b, c])
+        XCTAssertFalse(try store.load()[0].waypoints.manualOrder)
+    }
+
+    func testOlderWaypointsDecodeWithoutManualOrder() throws {
+        let waypoints = try JSONDecoder().decode(TripWaypoints.self, from: Data("{\"stops\":[]}".utf8))
+        XCTAssertFalse(waypoints.manualOrder)
+        XCTAssertTrue(waypoints.stops.isEmpty)
     }
 
     @MainActor

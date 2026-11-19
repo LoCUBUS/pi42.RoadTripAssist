@@ -17,6 +17,7 @@ final class TripPlannerViewModel: ObservableObject {
     @Published private(set) var searchFinished = false
     @Published private(set) var start: RoadStop?
     @Published private(set) var stops: [RoadStop] = []
+    @Published private(set) var manualOrder = false
     @Published private(set) var destination: RoadStop?
     @Published private(set) var roadPreview: PlannedRoute?
     @Published private(set) var suggestion: PlannedRoute?
@@ -98,7 +99,7 @@ final class TripPlannerViewModel: ObservableObject {
                 self?.searchResults = results
                 self?.searchFinished = true
             } catch {
-                if !Task.isCancelled { self?.errorMessage = error.localizedDescription }
+                if !Task.isCancelled { self?.errorMessage = Self.serviceErrorMessage(error) }
             }
         }
     }
@@ -134,7 +135,7 @@ final class TripPlannerViewModel: ObservableObject {
         return true
     }
 
-    private func waypoint(in field: WaypointField) -> RoadStop? {
+    func waypoint(in field: WaypointField) -> RoadStop? {
         switch field {
         case .start: start
         case .destination: destination
@@ -149,6 +150,7 @@ final class TripPlannerViewModel: ObservableObject {
         start = waypoints.start
         stops = waypoints.stops
         destination = waypoints.destination
+        manualOrder = waypoints.manualOrder
         clearRoute()
         scheduleRouting()
     }
@@ -165,6 +167,24 @@ final class TripPlannerViewModel: ObservableObject {
         waypointsChanged()
     }
 
+    func hasMapPlace(_ stop: RoadStop) -> Bool {
+        orderedWaypoints.contains { $0.matchesMapPlace(stop) }
+    }
+
+    func addMapPOI(_ stop: RoadStop) {
+        guard hasEndpoints, !hasMapPlace(stop) else { return }
+        if manualOrder {
+            stops.insert(stop, at: RoadStop.bestInsertionIndex(for: stop, along: orderedWaypoints))
+        } else {
+            stops.append(stop)
+        }
+        waypointsChanged()
+    }
+
+    func nearbyPOIs(in area: MapPOISearchArea) async throws -> [MapPointOfInterest] {
+        try await routeService.nearbyPOIs(in: area)
+    }
+
     func setDestination(_ stop: RoadStop) {
         guard canUseAsDestination(stop) else { return }
         destination = stop
@@ -174,6 +194,21 @@ final class TripPlannerViewModel: ObservableObject {
     func removeStop(_ stop: RoadStop) {
         if searchField == .stop(stop.id) { cancelSearch() }
         stops.removeAll { $0.id == stop.id }
+        waypointsChanged()
+    }
+
+    func moveStop(_ stop: RoadStop, by offset: Int) {
+        guard let index = stops.firstIndex(where: { $0.id == stop.id }),
+              offset == -1 || offset == 1,
+              stops.indices.contains(index + offset) else { return }
+        stops.swapAt(index, index + offset)
+        manualOrder = true
+        waypointsChanged()
+    }
+
+    func useProvisionalOrder() {
+        guard manualOrder else { return }
+        manualOrder = false
         waypointsChanged()
     }
 
@@ -206,7 +241,7 @@ final class TripPlannerViewModel: ObservableObject {
     }
 
     private func waypointsChanged() {
-        if let start, let destination {
+        if !manualOrder, let start, let destination {
             stops = RoadStop.provisionalOrder(start: start, stops: stops, destination: destination)
         }
         clearRoute()
@@ -221,7 +256,8 @@ final class TripPlannerViewModel: ObservableObject {
     }
 
     private func publishWaypoints() {
-        onWaypointsChanged?(TripWaypoints(start: start, stops: stops, destination: destination))
+        onWaypointsChanged?(TripWaypoints(start: start, stops: stops, destination: destination,
+                                          manualOrder: manualOrder))
     }
 
     private func scheduleRouting() {
@@ -265,10 +301,19 @@ final class TripPlannerViewModel: ObservableObject {
                 self?.routeStatus = .finished
             } catch {
                 if !Task.isCancelled {
-                    self?.routingError = error.localizedDescription
+                    self?.routingError = Self.serviceErrorMessage(error)
                     self?.routeStatus = .failed
                 }
             }
         }
+    }
+
+    private static func serviceErrorMessage(_ error: Error) -> String {
+        let nsError = error as NSError
+        let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+        if nsError.domain == NSURLErrorDomain || underlying?.domain == NSURLErrorDomain {
+            return "Netzwerkfehler: \(error.localizedDescription) Bitte Internetverbindung prüfen und erneut versuchen."
+        }
+        return error.localizedDescription
     }
 }

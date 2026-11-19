@@ -5,6 +5,27 @@ struct TripWaypoints: Codable {
     var start: RoadStop?
     var stops: [RoadStop] = []
     var destination: RoadStop?
+    var manualOrder = false
+
+    init(start: RoadStop? = nil, stops: [RoadStop] = [], destination: RoadStop? = nil,
+         manualOrder: Bool = false) {
+        self.start = start
+        self.stops = stops
+        self.destination = destination
+        self.manualOrder = manualOrder
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case start, stops, destination, manualOrder
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        start = try container.decodeIfPresent(RoadStop.self, forKey: .start)
+        stops = try container.decode([RoadStop].self, forKey: .stops)
+        destination = try container.decodeIfPresent(RoadStop.self, forKey: .destination)
+        manualOrder = try container.decodeIfPresent(Bool.self, forKey: .manualOrder) ?? false
+    }
 }
 
 struct RoadTrip: Identifiable, Codable {

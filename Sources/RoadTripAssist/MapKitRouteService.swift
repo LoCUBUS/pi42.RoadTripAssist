@@ -1,14 +1,50 @@
 import CoreLocation
 import MapKit
 
+struct MapPointOfInterest: Identifiable {
+    let stop: RoadStop
+    let phoneNumber: String?
+    let website: URL?
+
+    var id: RoadStop.ID { stop.id }
+}
+
+struct MapPOISearchArea: Equatable {
+    let latitude: Double
+    let longitude: Double
+    let radius: CLLocationDistance
+
+    init?(center: CLLocationCoordinate2D, clickTolerance: CLLocationDistance) {
+        guard CLLocationCoordinate2DIsValid(center), clickTolerance.isFinite,
+              clickTolerance > 0 else { return nil }
+        latitude = center.latitude
+        longitude = center.longitude
+        radius = min(clickTolerance, 60)
+    }
+
+    var center: CLLocationCoordinate2D { .init(latitude: latitude, longitude: longitude) }
+
+    func nearestPOI(in candidates: [MapPointOfInterest]) -> MapPointOfInterest? {
+        let origin = CLLocation(latitude: latitude, longitude: longitude)
+        return candidates.lazy.map { poi in
+            let coordinate = poi.stop.coordinate
+            let distance = origin.distance(from: CLLocation(latitude: coordinate.latitude,
+                                                            longitude: coordinate.longitude))
+            return (poi, distance)
+        }.filter { $0.1 <= radius }.min { $0.1 < $1.1 }?.0
+    }
+}
+
 struct RouteLeg {
     let duration: TimeInterval
+    let distance: CLLocationDistance
     let coordinates: [CLLocationCoordinate2D]
 }
 
 struct PlannedRoute {
     let orderedStops: [RoadStop]
     let duration: TimeInterval
+    let distance: CLLocationDistance
     let coordinates: [CLLocationCoordinate2D]
 }
 
@@ -47,7 +83,21 @@ final class MapKitRouteService {
         request.naturalLanguageQuery = query
         request.resultTypes = [.pointOfInterest, .address]
 
-        let search = MKLocalSearch(request: request)
+        let items = try await searchItems(MKLocalSearch(request: request))
+        return items.compactMap(roadStop(for:))
+    }
+
+    func nearbyPOIs(in area: MapPOISearchArea) async throws -> [MapPointOfInterest] {
+        let request = MKLocalPointsOfInterestRequest(center: area.center, radius: area.radius)
+        let items = try await searchItems(MKLocalSearch(request: request))
+        return items.compactMap { item in
+            roadStop(for: item).map {
+                MapPointOfInterest(stop: $0, phoneNumber: item.phoneNumber, website: item.url)
+            }
+        }
+    }
+
+    private func searchItems(_ search: MKLocalSearch) async throws -> [MKMapItem] {
         let response: MKLocalSearch.Response
         do {
             response = try await withTaskCancellationHandler {
@@ -61,14 +111,13 @@ final class MapKitRouteService {
             if (error as? MKError)?.code == .placemarkNotFound { return [] }
             throw error
         }
-        return response.mapItems.compactMap { item in
-            guard let name = item.name else { return nil }
-            return RoadStop(
-                name: name,
-                subtitle: subtitle(for: item),
-                coordinate: coordinate(for: item)
-            )
-        }
+        try Task.checkCancellation()
+        return response.mapItems
+    }
+
+    private func roadStop(for item: MKMapItem) -> RoadStop? {
+        guard let name = item.name, !name.isEmpty else { return nil }
+        return RoadStop(name: name, subtitle: subtitle(for: item), coordinate: coordinate(for: item))
     }
 
     func planRoute(
@@ -164,16 +213,20 @@ final class MapKitRouteService {
         guard available.count == pairs.count else { return nil }
         return PlannedRoute(orderedStops: Array(locations.dropFirst().dropLast()),
                             duration: available.reduce(0) { $0 + $1.duration },
+                            distance: available.reduce(0) { $0 + $1.distance },
                             coordinates: available.flatMap(\.coordinates))
     }
 
-    private static func mapItem(for stop: RoadStop) -> MKMapItem {
+    static func mapItem(for stop: RoadStop) -> MKMapItem {
+        let item: MKMapItem
         if #available(macOS 26.0, *) {
-            MKMapItem(location: CLLocation(latitude: stop.coordinate.latitude,
-                                           longitude: stop.coordinate.longitude), address: nil)
+            item = MKMapItem(location: CLLocation(latitude: stop.coordinate.latitude,
+                                                  longitude: stop.coordinate.longitude), address: nil)
         } else {
-            MKMapItem(placemark: MKPlacemark(coordinate: stop.coordinate))
+            item = MKMapItem(placemark: MKPlacemark(coordinate: stop.coordinate))
         }
+        item.name = stop.name
+        return item
     }
 
     private static func calculateLeg(from: RoadStop, to: RoadStop) async throws -> RouteLeg? {
@@ -213,7 +266,7 @@ final class MapKitRouteService {
 
         let points = route.polyline.points()
         let coordinates = (0..<route.polyline.pointCount).map { points[$0].coordinate }
-        return RouteLeg(duration: route.expectedTravelTime, coordinates: coordinates)
+        return RouteLeg(duration: route.expectedTravelTime, distance: route.distance, coordinates: coordinates)
     }
 
     private func coordinate(for item: MKMapItem) -> CLLocationCoordinate2D {

@@ -1,0 +1,411 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0A005BEA7D2A443AC2E28841 /* RoadTripAssistUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AF0970F01E1D0A7569C903A /* RoadTripAssistUITests.swift */; };
+		107D1204BE649EC94D1C16A3 /* MapKitRouteService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4A352124B479A75B40E2B98 /* MapKitRouteService.swift */; };
+		1512031CF43ADAF07E53D9AC /* PlannerUITestFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A719C94FB229A3241659378 /* PlannerUITestFixture.swift */; };
+		1A10BBD238AF486A4344FA0E /* RoadTripAssistApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EABD245856A3D8E2B4496EF5 /* RoadTripAssistApp.swift */; };
+		2EDB380FBBF2729C62819EB0 /* RouteOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E43AA426E6CDDF28B43F998 /* RouteOptimizer.swift */; };
+		6AD337D0E4406AC89C72D463 /* TripPlannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 255349A8D6F510A417679431 /* TripPlannerView.swift */; };
+		83F58EF69F785D45EDCFF2CF /* TripPlannerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70AAFE57B3930D5ABCF3E30A /* TripPlannerViewModel.swift */; };
+		9505B58208B62FF6A5057FFB /* TripLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */; };
+		DBD665A069F4B9E1BC91A7FB /* RoadStop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 065A15EDB1861AD95F3A9114 /* RoadStop.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E8702B05FAD5FEB4F7D33CB6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0FA9288578D30DD292AFF447 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7C55EF5D1C65C483048C4DF2;
+			remoteInfo = RoadTripAssist;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		065A15EDB1861AD95F3A9114 /* RoadStop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadStop.swift; sourceTree = "<group>"; };
+		255349A8D6F510A417679431 /* TripPlannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPlannerView.swift; sourceTree = "<group>"; };
+		4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripLibrary.swift; sourceTree = "<group>"; };
+		70AAFE57B3930D5ABCF3E30A /* TripPlannerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPlannerViewModel.swift; sourceTree = "<group>"; };
+		7E43AA426E6CDDF28B43F998 /* RouteOptimizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteOptimizer.swift; sourceTree = "<group>"; };
+		9A719C94FB229A3241659378 /* PlannerUITestFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlannerUITestFixture.swift; sourceTree = "<group>"; };
+		9AF0970F01E1D0A7569C903A /* RoadTripAssistUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripAssistUITests.swift; sourceTree = "<group>"; };
+		A05B39EF8A16A119328D65CF /* RoadTripAssist.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RoadTripAssist.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C70D6521FDC9C94FBD70A6AC /* RoadTripAssistUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RoadTripAssistUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E4A352124B479A75B40E2B98 /* MapKitRouteService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapKitRouteService.swift; sourceTree = "<group>"; };
+		EABD245856A3D8E2B4496EF5 /* RoadTripAssistApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripAssistApp.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		18502FB2B053D23CE19B329F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A05B39EF8A16A119328D65CF /* RoadTripAssist.app */,
+				C70D6521FDC9C94FBD70A6AC /* RoadTripAssistUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		3A0D2A6D3FD40D99B8806F42 /* RoadTripAssistUITests */ = {
+			isa = PBXGroup;
+			children = (
+				9AF0970F01E1D0A7569C903A /* RoadTripAssistUITests.swift */,
+			);
+			name = RoadTripAssistUITests;
+			path = Tests/RoadTripAssistUITests;
+			sourceTree = "<group>";
+		};
+		5F80B0F54919C65DB42C6D64 = {
+			isa = PBXGroup;
+			children = (
+				A658E27764474BF1267370B5 /* RoadTripAssist */,
+				3A0D2A6D3FD40D99B8806F42 /* RoadTripAssistUITests */,
+				18502FB2B053D23CE19B329F /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A658E27764474BF1267370B5 /* RoadTripAssist */ = {
+			isa = PBXGroup;
+			children = (
+				E4A352124B479A75B40E2B98 /* MapKitRouteService.swift */,
+				9A719C94FB229A3241659378 /* PlannerUITestFixture.swift */,
+				065A15EDB1861AD95F3A9114 /* RoadStop.swift */,
+				EABD245856A3D8E2B4496EF5 /* RoadTripAssistApp.swift */,
+				7E43AA426E6CDDF28B43F998 /* RouteOptimizer.swift */,
+				4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */,
+				255349A8D6F510A417679431 /* TripPlannerView.swift */,
+				70AAFE57B3930D5ABCF3E30A /* TripPlannerViewModel.swift */,
+			);
+			name = RoadTripAssist;
+			path = Sources/RoadTripAssist;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		229984C17B578B31E4BDEF81 /* RoadTripAssistUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D2F94CEC67B5374C2BD21E52 /* Build configuration list for PBXNativeTarget "RoadTripAssistUITests" */;
+			buildPhases = (
+				55B7CB125050A07E3048A301 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F3D210408F4F3BEF2C00B897 /* PBXTargetDependency */,
+			);
+			name = RoadTripAssistUITests;
+			packageProductDependencies = (
+			);
+			productName = RoadTripAssistUITests;
+			productReference = C70D6521FDC9C94FBD70A6AC /* RoadTripAssistUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		7C55EF5D1C65C483048C4DF2 /* RoadTripAssist */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1858D5C280939B70B06B4354 /* Build configuration list for PBXNativeTarget "RoadTripAssist" */;
+			buildPhases = (
+				256D421E7B2B402B754090D3 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RoadTripAssist;
+			packageProductDependencies = (
+			);
+			productName = RoadTripAssist;
+			productReference = A05B39EF8A16A119328D65CF /* RoadTripAssist.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0FA9288578D30DD292AFF447 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					229984C17B578B31E4BDEF81 = {
+						TestTargetID = 7C55EF5D1C65C483048C4DF2;
+					};
+				};
+			};
+			buildConfigurationList = 4A69C940199F4BE00A0FAFF7 /* Build configuration list for PBXProject "RoadTripAssist" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 5F80B0F54919C65DB42C6D64;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 18502FB2B053D23CE19B329F /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7C55EF5D1C65C483048C4DF2 /* RoadTripAssist */,
+				229984C17B578B31E4BDEF81 /* RoadTripAssistUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		256D421E7B2B402B754090D3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				107D1204BE649EC94D1C16A3 /* MapKitRouteService.swift in Sources */,
+				1512031CF43ADAF07E53D9AC /* PlannerUITestFixture.swift in Sources */,
+				DBD665A069F4B9E1BC91A7FB /* RoadStop.swift in Sources */,
+				1A10BBD238AF486A4344FA0E /* RoadTripAssistApp.swift in Sources */,
+				2EDB380FBBF2729C62819EB0 /* RouteOptimizer.swift in Sources */,
+				9505B58208B62FF6A5057FFB /* TripLibrary.swift in Sources */,
+				6AD337D0E4406AC89C72D463 /* TripPlannerView.swift in Sources */,
+				83F58EF69F785D45EDCFF2CF /* TripPlannerViewModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		55B7CB125050A07E3048A301 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A005BEA7D2A443AC2E28841 /* RoadTripAssistUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		F3D210408F4F3BEF2C00B897 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7C55EF5D1C65C483048C4DF2 /* RoadTripAssist */;
+			targetProxy = E8702B05FAD5FEB4F7D33CB6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1070B235B2AF2143F4687728 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = de.locubus.RoadTripAssist.UITests;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = RoadTripAssist;
+			};
+			name = Release;
+		};
+		18352CAA8670485A645EBDAC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = de.locubus.RoadTripAssist;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG UI_TEST_SUPPORT";
+			};
+			name = Debug;
+		};
+		4EEEBC6036A79C4A9F94B4D8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = de.locubus.RoadTripAssist.UITests;
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = RoadTripAssist;
+			};
+			name = Debug;
+		};
+		7A9CA51AC5CABDA4790A1C15 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		F4A3E348213DAABCB53B080B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		FAA7DF665DA26B4CD2A4C64F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = de.locubus.RoadTripAssist;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1858D5C280939B70B06B4354 /* Build configuration list for PBXNativeTarget "RoadTripAssist" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				18352CAA8670485A645EBDAC /* Debug */,
+				FAA7DF665DA26B4CD2A4C64F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4A69C940199F4BE00A0FAFF7 /* Build configuration list for PBXProject "RoadTripAssist" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F4A3E348213DAABCB53B080B /* Debug */,
+				7A9CA51AC5CABDA4790A1C15 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D2F94CEC67B5374C2BD21E52 /* Build configuration list for PBXNativeTarget "RoadTripAssistUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4EEEBC6036A79C4A9F94B4D8 /* Debug */,
+				1070B235B2AF2143F4687728 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0FA9288578D30DD292AFF447 /* Project object */;
+}

@@ -9,8 +9,20 @@ struct RoadTripAssistApp: App {
         Window("RoadTripAssist", id: "planner") {
             TripPlannerView()
         }
-
         .defaultSize(width: 1320, height: 820)
+        .commands {
+            PlannerWindowCommands()
+        }
+    }
+}
+
+private struct PlannerWindowCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .windowArrangement) {
+            Button("Routenplaner öffnen") { openWindow(id: "planner") }
+        }
     }
 }
 

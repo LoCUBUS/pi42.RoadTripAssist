@@ -1,0 +1,35 @@
+name: RoadTripAssist
+options:
+  deploymentTarget:
+    macOS: '14.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  RoadTripAssist:
+    type: application
+    platform: macOS
+    sources: [Sources/RoadTripAssist]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.locubus.RoadTripAssist
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) DEBUG UI_TEST_SUPPORT
+  RoadTripAssistUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [Tests/RoadTripAssistUITests]
+    dependencies:
+      - target: RoadTripAssist
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: de.locubus.RoadTripAssist.UITests
+schemes:
+  RoadTripAssist:
+    build:
+      targets:
+        RoadTripAssist: all
+        RoadTripAssistUITests: [test]
+    test:
+      targets: [RoadTripAssistUITests]
