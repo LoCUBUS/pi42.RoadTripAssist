@@ -1,8 +1,8 @@
 # RoadTripAssist – Implementierungsplan
 
-**Aktueller Stand:** Phasen 0–2 sind für den Prototyp umgesetzt: lokale Reisen, Ortssuche und POI-Auswahl auf der Karte, Straßenroute mit Fahrzeit und Strecke, manuelle Sortierung, Optimierungsvorschläge und Übergabe eines einzelnen Wegpunkts an Apple Karten. Die Kernabläufe sind automatisiert getestet.
+**Aktueller Stand (20. November 2026):** Phasen 0–3 sind für den Prototyp funktional abgeschlossen. Die Nachbesserungen an Etappenplanung, Budgetanzeige, Übernachtungssuche und Bedienung gehören zum Stand von Phase 3. Die gezielten Swift- und macOS-UI-Tests sind bestanden; ein vollständiger Testlauf nach den letzten Änderungen steht noch aus.
 
-**Als Nächstes:** Phase 3 – Etappenplanung. Der Google-/Mapbox-Livevergleich ist auf Phase 7 verschoben und blockiert die Etappenplanung nicht. Vor Veröffentlichung bleibt die Prüfung der Apple-Vorgaben für alternative Routenanfragen und den Cache offen.
+**Als Nächstes:** Phase 4 – Fotoverwaltung. Der Google-/Mapbox-Livevergleich bleibt für Phase 7 vorgesehen. Vor Veröffentlichung bleibt die Prüfung der Apple-Vorgaben für alternative Routenanfragen und den Cache offen.
 
 ## 1. Bestätigte Anforderungen
 
@@ -47,7 +47,7 @@ Der Prototyp verwendet **MapKit für Karte, Suche, POI-Auswahl und Fahrzeiten**.
 
 | Kriterium | MapKit + lokaler Optimierer | Google Routes API | Mapbox Optimization v1 |
 |---|---|---|---|
-| Reihenfolge | Exaktes Minimum der abgefragten, gerichteten Fahrzeitmatrix bis 18 Zwischenstopps; danach nur Straßenroute in aktueller Reihenfolge. | `optimizeWaypointOrder` optimiert vorrangig Fahrzeit, berücksichtigt auch Entfernung und Abbiegungen. | Dauerbasierte Optimierung mit zusätzlichen Manöver-Strafwerten. |
+| Reihenfolge | Exaktes Minimum der abgefragten, gerichteten Fahrzeitmatrix bis 18 frei sortierbare Stopps je Etappe; darüber nur Straßenroute in aktueller Reihenfolge. | `optimizeWaypointOrder` optimiert vorrangig Fahrzeit, berücksichtigt auch Entfernung und Abbiegungen. | Dauerbasierte Optimierung mit zusätzlichen Manöver-Strafwerten. |
 | Feste Endpunkte | Start und Ziel sind im lokalen Optimierer fest. | Origin und Destination bleiben fest; Zwischenpunkte dürfen keine `via`-Punkte sein. `TRAFFIC_AWARE_OPTIMAL` ist bei Optimierung nicht erlaubt. | Möglich mit `source=first`, `destination=last`, `roundtrip=false`. |
 | Umfang | Anzahl der MapKit-Anfragen wächst quadratisch; bei fünf/sechs Zwischenstopps 30/42 Anfragen für eine frische vollständige Berechnung. | Bis 25 Zwischenstopps je Anfrage; dokumentiertes Limit 3.000 Anfragen/Minute. | Bis 12 Koordinaten insgesamt, also maximal zehn Zwischenstopps; 300 Anfragen/Minute. |
 | Abrechnung | Native MapKit-Nutzung; konkrete Nutzungsbedingungen und Skalierbarkeit für diesen Anwendungsfall prüfen. | API-Key und aktivierte Abrechnung erforderlich; Optimierung löst Compute Routes Pro aus, mehr als zehn Zwischenstopps können die Abrechnung beeinflussen. [Preise](https://developers.google.com/maps/billing-and-pricing/pricing#routes-pricing) prüfen. | Token erforderlich; Abrechnung pro Anfrage, einschließlich mehrerer Wegpunkte. [Preise und Freikontingente](https://www.mapbox.com/pricing/#optimization-api) prüfen. |
@@ -66,7 +66,9 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - XCUITest deckt Reiseanlage, Ortssuche, manuelles Verschieben, Streckenanzeige, Wiederöffnen und Rückkehr zur Luftliniensortierung mit isolierten Testdaten ab.
 - XCUITest prüft auch Treffer und Klicks ohne Treffer in der echten Kartenansicht mit simulierten Suchergebnissen, die Ortsdetails und das Einfügen erst nach Bestätigung. Ein separater MapKit-Livetest prüft, ob die Umgebungssuche Unbound Coffee in Innsbruck liefert.
 - Die Übergabedaten für Zwischenziel und Ziel werden geprüft; der optionale Smoke-Test prüft zusätzlich, dass Apple Karten tatsächlich ein Fenster öffnet. Es wird nicht die gesamte Reise übergeben.
-- Netzwerkfehler und Wiederholung sind mit simulierten Fehlern im Swift-Paket getestet. Kartenkacheln und das Verhalten bei tatsächlich unterbrochener Netzwerkverbindung werden nicht automatisiert geprüft.
+- Die Etappentests prüfen direktes Hinzufügen einer Übernachtung von der Karte, Teilen und Zusammenführen von Etappen, Abbrechen und Bestätigen beim Entfernen, aktualisierte Etappenzeit nach einer Verweilzeitänderung sowie Bestätigen und Widerrufen einer Budgetüberschreitung.
+- Ein Screenshot-Vergleich bei gleichem Kartenausschnitt prüft, dass der Suchkreis eine sichtbare orangefarbene Kontur hat und die Karte innen nicht einfärbt. Ohne explizit transparenten Füllstil hat MapKit den Kreis trotz Kontur gefüllt; der Test erkennt diese Regression.
+- Netzwerkfehler und Wiederholung sind mit simulierten Fehlern im Swift-Paket getestet. Die Verfügbarkeit von Kartenkacheln und das Verhalten bei tatsächlich unterbrochener Netzwerkverbindung werden nicht automatisiert geprüft.
 - Startbefehle stehen in der [README](README.md).
 
 ## 3. MVP und Funktionsumfang
@@ -78,16 +80,18 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - Zwischenstopps für minimale **geschätzte Gesamtfahrzeit** sortieren; Start und Ziel bleiben fix.
 - Die aktuelle Reihenfolge in Liste und Karte anzeigen; einen schnelleren Vorschlag in der Seitenleiste prüfen, übernehmen oder die Reihenfolge manuell korrigieren. Die Karte zeigt die Vorschlagsroute erst nach Übernahme.
 - Geschätzte Fahrzeit und Strecke der berechneten Straßenroute anzeigen.
-- Einen ausgewählten Wegpunkt an Apple Karten übergeben. Die automatische Auswahl des nächsten Ziels folgt in Phase 3.
+- Einen ausgewählten Wegpunkt an Apple Karten übergeben. Im Reiseverlauf wird seit Phase 3 auch das nächste offene Ziel angeboten.
 - Reise lokal speichern und nach einem Neustart wieder öffnen.
 
-### Nach dem MVP
+### Nach dem MVP – in Phase 3 umgesetzt
 - Etappen mit frei wählbarem Zeitbudget und Übernachtungs-POI.
 - Reiseablauf mit Überspringen, Notizen und Bewertungen.
+
+### Weitere Ausbaustufen – offen
 - Fotoimport, GPS-Zuordnung mit Bestätigung und lokale Medienverwaltung.
 - Offline-HTML-Reisetagebuch mit Übersichts- und Etappenseiten.
 
-**Optimierungsannahme für den Start:** Alle Zwischenstopps sind zunächst frei umsortierbar; keine Öffnungszeiten, Zeitfenster, Prioritäten oder Übernachtungszwänge. Wenn Etappen und feste Übernachtungsorte später hinzukommen, werden diese als feste Anker behandelt und nur Stopps innerhalb der jeweiligen Etappe optimiert. Optimierungsergebnisse bleiben überprüfbar und manuell änderbar.
+**Optimierungsregeln im Prototyp:** Ohne Übernachtungsanker sind alle Zwischenstopps frei umsortierbar. Markierte Übernachtungen bilden feste Etappengrenzen; die Optimierung sortiert nur zwischen diesen Ankern. Öffnungszeiten, Zeitfenster und Prioritäten fließen nicht ein. Das Zeitbudget ist ein Planungshinweis, keine Nebenbedingung des Optimierers. Vorschläge bleiben überprüfbar und manuell änderbar.
 
 ## 4. Bedienung und UX-Ziele
 
@@ -107,7 +111,7 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - Linke Spalte: Reisen und Reiseverwaltung.
 - Mitte: Karte mit Straßenroute, Wegpunktmarkern und originalen Apple-Kartensymbolen. Ein Kartenklick sucht in einem Radius von höchstens 60 m; die Infobox zeigt den nächsten Treffer zur Bestätigung. Bei keinem Treffer bleibt die Route unverändert.
 - Rechte Spalte: Start, Zwischenziele und Ziel mit direkter Ortssuche, Fortschritt, geschätzter Fahrzeit, Strecke und einem möglichen Vorschlag. Der Vorschlag überschreibt die Route nicht ohne Bestätigung.
-- Nummerierte Kartenmarker, separat einstellbare Spaltenbreiten und einklappbare Seitenleisten sind UX-Ziele, kein aktueller Funktionsumfang. Verweilzeiten und Etappen folgen in Phase 3.
+- Der Umschalter „Route / Etappen“ wechselt zwischen Routen- und Etappenliste. Größere grüne Überschriften „Etappe n: …“ kennzeichnen die Teilrouten; kleine Symbolbuttons führen die Wegpunktaktionen aus. Nummerierte Kartenmarker, separat einstellbare Spaltenbreiten und einklappbare Seitenleisten bleiben UX-Ziele.
 
 ## 5. Umsetzungsphasen
 
@@ -131,12 +135,22 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - Vorläufige Luftlinien-Sortierung bei festem Start und Ziel; Fahrzeitoptimierung nach Aktivierung als Vorschlag zur Übernahme. Karten-POIs werden bei manueller Reihenfolge so eingefügt, dass die zusätzliche Luftlinie möglichst klein bleibt, ohne bestehende Stopps umzusortieren.
 - Ergebnisvorschau, manuelle Korrektur, Fehler-/Offlinezustände und Apple-Maps-Übergabe.
 
-### Phase 3 – Etappenplanung und Durchführung
-- Etappen bilden und Zielzeit je Etappe optional festlegen.
-- Fahr- und Verweilzeit summieren; Übernachtungs-POI pro Etappe festlegen.
-- Etappenabschnitte zwischen festen Ankern optimieren.
-- Jeweils nächstes POI an Apple Maps übergeben; Stopps überspringen.
-- POI-Notizen und Bewertungen.
+### Phase 3 – Etappenplanung und Durchführung (funktional abgeschlossen)
+
+**Etappen und Wegpunktaktionen**
+- Das Bett-Symbol markiert oder entmarkiert eine Übernachtung; ein ausgefülltes Bett zeigt die aktive Markierung. An einem Zwischenziel teilt dies die Route oder führt angrenzende Etappen zusammen. Die letzte Etappe endet immer am Reiseziel. Jede Etappe lässt sich einzeln auf der Karte anzeigen.
+- In den Karten-Ortsdetails stehen „Zur Route hinzufügen“ und „Als Übernachtung hinzufügen“ zur Auswahl. Die zweite Aktion fügt den POI ein und markiert ihn direkt als Etappengrenze. Doppelte POIs werden nicht hinzugefügt. Die Einfügelücke für eine neue Übernachtung wird nach der kleinsten zusätzlichen Luftlinienentfernung gewählt.
+- Das Info-Symbol öffnet Verweilzeit, Notizen, Bewertung und bei Zielen den Besuchsstatus. Das Kartensymbol ist derselbe Button wie in der Routenplanung. Das Minus-Symbol entfernt nur Zwischenziele und erst nach Bestätigung. Beim Entfernen einer Übernachtung nennt der Dialog ausdrücklich das Zusammenführen der angrenzenden Etappen.
+- Luftlinien- und Fahrzeitoptimierung sortieren nur innerhalb der Etappengrenzen. Die manuelle Reihenfolge bleibt über die Routenansicht änderbar.
+
+**Etappenzeit, Suchkreis und Budgetausnahme**
+- Standardbudget, abweichendes Budget am Etappenziel und Verweilzeit im Wegpunktdialog verwenden `hh:mm`. Ein leeres Etappenbudget übernimmt das Standardbudget, ein leeres Standardbudget setzt keines. `00:00` ist für Verweilzeiten zulässig, nicht für ein gesetztes Budget.
+- Die Etappenzeit addiert Fahr- und Verweilzeit, wobei ein gemeinsamer Übernachtungsort nur zur ankommenden Etappe zählt. Gespeicherte Verweilzeiten aktualisieren die Anzeige ohne erneute MapKit-Abfrage. Fehlt die Fahrzeit, erscheint z. B. „45 min + ausstehende Fahrzeit“. Das Budget bleibt beim Ändern der Verweilzeit unverändert.
+- Der Budgetplatzhalter markiert bei einer Überschreitung die erste geschätzte Stelle, an der die Zeit aufgebraucht ist: am Wegpunkt während eines Aufenthalts oder näherungsweise entlang der Straßengeometrie. Ein Klick zoomt auf die orangefarbene Bettmarkierung mit einem ungefüllten Suchkreis von 5 km Durchmesser. Der Suchkreis ist eine Orientierungshilfe; die App sucht dort nicht automatisch nach Unterkünften und verschiebt keine Stopps.
+- Wird die Übernachtung erst nach dem Budgetpunkt erreicht, zeigt die Etappe die geschätzte Überschreitung in Minuten vor Ankunft. „Budgetpunkt ausblenden“ blendet nach Bestätigung Platzhalter und Suchkreis aus; Warnung und Route bleiben erhalten. Die gespeicherte Bestätigung gilt für dieselbe Wegpunktfolge und dasselbe Budget, solange die Ankunft nicht später als bestätigt geschätzt wird. „Budgetpunkt wieder anzeigen“ widerruft sie. Wird das Budget erst am bereits als Übernachtung markierten Etappenziel erreicht, entfällt dort der Suchpunkt.
+
+**Reiseverlauf**
+- Das nächste offene oder ein beliebiges einzelnes Ziel lässt sich an Apple Karten übergeben. Besuchte und übersprungene Ziele bleiben im Plan und können wieder auf „Offen“ gesetzt werden. Der Status ändert weder Route noch Zeiten. Wegpunktdetails, Budgets, Bestätigungen und Fortschritt bleiben lokal gespeichert.
 
 ### Phase 4 – Fotoverwaltung
 - Fotos über Systemdialog aus Fotos-Mediathek oder Dateien auswählen.
@@ -161,14 +175,13 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 
 ## 6. Datenmodell
 
-**Implementiert:** `RoadTrip` speichert ID, Name und Beschreibung. `TripWaypoints` enthält Start, eine geordnete Liste von Zwischenzielen, Ziel und die manuelle Sortiereinstellung. `RoadStop` speichert ID, Name, Untertitel und Koordinaten. Berechnete Routen und der MapKit-Opt-in werden nicht gespeichert.
+**Implementiert:** `RoadTrip` speichert ID, Name und Beschreibung. `TripWaypoints` enthält Start, geordnete Zwischenziele, Ziel, die manuelle Sortiereinstellung und das Standard-Zeitbudget. `RoadStop` speichert ID, Name, Untertitel und Koordinaten. Pro Wegpunkt-ID hält `WaypointDetails` Verweilzeit, Notiz, Bewertung, Besuchsstatus, Übernachtungskennzeichen, Etappenbudget und eine optionale Bestätigung der Budgetüberschreitung fest. Budgets und Verweilzeiten werden als Minuten gespeichert; eine Bestätigung enthält zusätzlich die geordneten Wegpunkt-IDs und die bestätigte Ankunftsminute. Etappen und Suchpunkte werden daraus und aus der aktuellen Straßenvorschau abgeleitet. Berechnete Routen und der MapKit-Opt-in werden nicht gespeichert. Ältere Reisen lassen sich ohne diese Felder laden.
 
 **Entwurf für die weitere Entwicklung (keine Beschreibung des aktuellen JSON-Formats):**
 
 - **Trip:** ID, Name, Beschreibung, Zeitstempel.
 - **Waypoint:** ID, Trip-ID, eingegebene und ausgewählte Ortsdaten, Koordinate, Reihenfolge, Rolle, Verweilzeit, Notiz, Bewertung.
 - **RoutePlan:** Trip-ID, optimierte Stoppreihenfolge, Zeitpunkt/Profil der Berechnung, geschätzte Fahrtzeit, Anbieter/Version; erlaubt Neuberechnung und Anzeige von veralteten Schätzungen.
-- **Leg:** Etappenreihenfolge, Start-/End-Waypoint, optionales Zeitbudget und Übernachtungsort.
 - **Photo:** lokale App-Mediendatei, Aufnahmedatum, optionale GPS-Metadaten, Beschreibung.
 - **PhotoAssignment:** Foto, Etappe, optionaler POI oder Streckenabschnitt, Zuordnungsstatus (Vorschlag/bestätigt).
 
@@ -187,4 +200,6 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - Die App berechnet eine Fahrtzeit-basierte Zwischenstopp-Reihenfolge, hält Start/Ziel fest und erläutert, dass es eine Schätzung ist.
 - Nutzer kann die vorgeschlagene Reihenfolge ansehen, übernehmen, manuell ändern und erneut berechnen.
 - Karte, Routenliste und an Apple Maps übergebenes Ziel sind konsistent.
+- Etappen lassen sich separat anzeigen, summieren Fahr- und Verweilzeit ohne Doppelzählung und behalten ihre Grenzen bei der Optimierung. Das nächste offene Ziel berücksichtigt besuchte und übersprungene Wegpunkte.
+- Änderungen an Verweilzeiten aktualisieren die Etappenzeit direkt. Ein Budgetpunkt lässt sich bei späterer Übernachtungsankunft nach Bestätigung ausblenden und wieder einblenden, ohne Route oder Warnung zu verändern.
 - **Phase 5 (offen):** Ein Export enthält Übersicht, Etappenseiten und Medien und lässt sich ohne Internetverbindung öffnen.

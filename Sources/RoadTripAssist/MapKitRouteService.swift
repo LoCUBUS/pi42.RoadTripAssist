@@ -39,13 +39,40 @@ struct RouteLeg {
     let duration: TimeInterval
     let distance: CLLocationDistance
     let coordinates: [CLLocationCoordinate2D]
+
+    func coordinate(atFraction fraction: Double) -> CLLocationCoordinate2D? {
+        let worldWidth = MKMapRect.world.width
+        let points = coordinates.map(MKMapPoint.init)
+        let segments = zip(points, points.dropFirst()).map { from, to -> (MKMapPoint, MKMapPoint, Double) in
+            var to = to
+            if to.x - from.x > worldWidth / 2 { to.x -= worldWidth }
+            if to.x - from.x < -worldWidth / 2 { to.x += worldWidth }
+            let latitude = (from.coordinate.latitude + to.coordinate.latitude) / 2
+            let length = hypot(to.x - from.x, to.y - from.y) * MKMetersPerMapPointAtLatitude(latitude)
+            return (from, to, length)
+        }
+        guard let last = coordinates.last else { return nil }
+        var remaining = segments.reduce(0) { $0 + $1.2 } * fraction
+        for (from, to, length) in segments where length > 0 {
+            if remaining <= length {
+                let progress = remaining / length
+                let x = from.x + (to.x - from.x) * progress
+                return MKMapPoint(x: x < 0 ? x + worldWidth : (x >= worldWidth ? x - worldWidth : x),
+                                  y: from.y + (to.y - from.y) * progress).coordinate
+            }
+            remaining -= length
+        }
+        return last
+    }
 }
 
 struct PlannedRoute {
     let orderedStops: [RoadStop]
-    let duration: TimeInterval
-    let distance: CLLocationDistance
-    let coordinates: [CLLocationCoordinate2D]
+    let legs: [RouteLeg]
+
+    var duration: TimeInterval { legs.reduce(0) { $0 + $1.duration } }
+    var distance: CLLocationDistance { legs.reduce(0) { $0 + $1.distance } }
+    var coordinates: [CLLocationCoordinate2D] { legs.flatMap(\.coordinates) }
 }
 
 enum RouteCalculationStep: Equatable {
@@ -124,6 +151,7 @@ final class MapKitRouteService {
         start: RoadStop,
         stops: [RoadStop],
         destination: RoadStop,
+        anchors: Set<RoadStop.ID> = [],
         onPreview: (PlannedRoute?) -> Void,
         onProgress: (Int, Int) -> Void,
         onStep: (RouteCalculationStep) -> Void = { _ in }
@@ -135,17 +163,21 @@ final class MapKitRouteService {
             throw RouteOptimizationError.invalidStopIndices
         }
         legs = legs.filter { activeIDs.contains($0.key.from) && activeIDs.contains($0.key.to) }
-        let end = locations.count - 1
-        let indices = Array(1..<end)
+        let stages = TripStage.ranges(in: locations, anchors: anchors)
         let previewPairs = pathPairs(locations)
-        let supportsExactOptimization = stops.count <= RouteOptimizer.maximumExactStopCount
+        let largestStage = stages.map { $0.count - 2 }.max() ?? 0
+        let supportsExactOptimization = largestStage <= RouteOptimizer.maximumExactStopCount
         var extraPairs: [Pair] = []
         if supportsExactOptimization {
             let previewSet = Set(previewPairs)
-            for from in 0..<end {
-                for to in 1...end where from != to && (from != 0 || to != end) {
-                    let pair = Pair(from: locations[from].id, to: locations[to].id)
-                    if !previewSet.contains(pair) { extraPairs.append(pair) }
+            for stage in stages {
+                let start = stage.lowerBound
+                let end = stage.upperBound
+                for from in start..<end {
+                    for to in (start + 1)...end where from != to && (from != start || to != end) {
+                        let pair = Pair(from: locations[from].id, to: locations[to].id)
+                        if !previewSet.contains(pair) { extraPairs.append(pair) }
+                    }
                 }
             }
         }
@@ -177,19 +209,25 @@ final class MapKitRouteService {
         onPreview(route(for: locations))
 
         guard supportsExactOptimization else {
-            throw RouteOptimizationError.tooManyStops(stops.count)
+            throw RouteOptimizationError.tooManyStops(largestStage)
         }
         try await loadLegs(extraPairs, step: RouteCalculationStep.alternativeLegs(done:total:))
         if !stops.isEmpty { onStep(.comparingOrders) }
 
-        let matrix = locations.map { from in
-            locations.map { to in
-                legs[Pair(from: from.id, to: to.id)]?.route?.duration ?? .infinity
+        let matrices = stages.map { stage in
+            locations[stage].map { from in
+                locations[stage].map { to in
+                    legs[Pair(from: from.id, to: to.id)]?.route?.duration ?? .infinity
+                }
             }
         }
         let optimization = Task.detached {
-            try RouteOptimizer.optimize(travelTimes: matrix, startIndex: 0,
-                                        stopIndices: indices, destinationIndex: end)
+            try zip(stages, matrices).flatMap { stage, matrix in
+                let end = stage.count - 1
+                let order = try RouteOptimizer.optimize(travelTimes: matrix, startIndex: 0,
+                                                        stopIndices: Array(1..<end), destinationIndex: end)
+                return (order + [end]).map { stage.lowerBound + $0 }
+            }
         }
         let order = try await withTaskCancellationHandler {
             try await optimization.value
@@ -197,7 +235,7 @@ final class MapKitRouteService {
             optimization.cancel()
         }
         try Task.checkCancellation()
-        guard let route = route(for: [start] + order.map { locations[$0] } + [destination]) else {
+        guard let route = route(for: [start] + order.map { locations[$0] }) else {
             throw MapKitRouteError.missingRoute
         }
         return route
@@ -211,10 +249,7 @@ final class MapKitRouteService {
         let pairs = pathPairs(locations)
         let available = pairs.compactMap { legs[$0]?.route }
         guard available.count == pairs.count else { return nil }
-        return PlannedRoute(orderedStops: Array(locations.dropFirst().dropLast()),
-                            duration: available.reduce(0) { $0 + $1.duration },
-                            distance: available.reduce(0) { $0 + $1.distance },
-                            coordinates: available.flatMap(\.coordinates))
+        return PlannedRoute(orderedStops: Array(locations.dropFirst().dropLast()), legs: available)
     }
 
     static func mapItem(for stop: RoadStop) -> MKMapItem {

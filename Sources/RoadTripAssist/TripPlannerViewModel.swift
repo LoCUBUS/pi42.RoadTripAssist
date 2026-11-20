@@ -19,6 +19,8 @@ final class TripPlannerViewModel: ObservableObject {
     @Published private(set) var stops: [RoadStop] = []
     @Published private(set) var manualOrder = false
     @Published private(set) var destination: RoadStop?
+    @Published private(set) var details: [RoadStop.ID: WaypointDetails] = [:]
+    @Published private(set) var defaultStageBudgetMinutes: Int?
     @Published private(set) var roadPreview: PlannedRoute?
     @Published private(set) var suggestion: PlannedRoute?
     @Published private(set) var isProvisional = true
@@ -53,6 +55,81 @@ final class TripPlannerViewModel: ObservableObject {
     }
 
     var hasEndpoints: Bool { start != nil && destination != nil }
+
+    private var anchors: Set<RoadStop.ID> {
+        Set(stops.filter { details[$0.id]?.overnight == true }.map(\.id))
+    }
+
+    var stages: [TripStage] {
+        guard hasEndpoints else { return [] }
+        let waypoints = orderedWaypoints
+        let legs = roadPreview.flatMap { route in
+            route.orderedStops == stops && route.legs.count == waypoints.count - 1 ? route.legs : nil
+        }
+        return TripStage.ranges(in: waypoints, anchors: anchors).map { range in
+            let stageLegs = legs.map { Array($0[range.lowerBound..<range.upperBound]) }
+            let endDetails = details[waypoints[range.upperBound].id]
+            return TripStage(waypoints: Array(waypoints[range]), legs: stageLegs,
+                             waypointStayMinutes: range.map { index in
+                                 index != 0 && index == range.lowerBound ? 0 : details[waypoints[index].id]?.stayMinutes ?? 0
+                             },
+                             budgetMinutes: endDetails?.stageBudgetMinutes ?? defaultStageBudgetMinutes,
+                             endsWithOvernight: endDetails?.overnight == true,
+                             acceptedBudgetOverrun: endDetails?.acceptedBudgetOverrun)
+        }
+    }
+
+    var nextWaypoint: RoadStop? {
+        guard hasEndpoints else { return nil }
+        return orderedWaypoints.dropFirst().first { waypointDetails(for: $0).status == .pending }
+    }
+
+    func waypointDetails(for stop: RoadStop) -> WaypointDetails {
+        details[stop.id] ?? WaypointDetails()
+    }
+
+    func updateDetails(_ updated: WaypointDetails, for stop: RoadStop) {
+        guard orderedWaypoints.contains(stop) else { return }
+        let previous = waypointDetails(for: stop)
+        var updated = updated
+        if !updated.overnight || updated.stageBudgetMinutes != previous.stageBudgetMinutes {
+            updated.acceptedBudgetOverrun = nil
+        }
+        guard previous != updated else { return }
+        details[stop.id] = updated
+        publishWaypoints()
+        if stops.contains(stop), previous.overnight != updated.overnight {
+            suggestion = nil
+            isProvisional = true
+            scheduleRouting()
+        }
+    }
+
+    func acceptBudgetOverrun(_ overrun: StageBudgetOverrun, endingAt stop: RoadStop) {
+        guard stages.first(where: { $0.id == stop.id })?.budgetOverrun == overrun else { return }
+        var updated = waypointDetails(for: stop)
+        updated.acceptedBudgetOverrun = overrun
+        updateDetails(updated, for: stop)
+    }
+
+    func clearBudgetOverrunAcceptance(endingAt stop: RoadStop) {
+        var updated = waypointDetails(for: stop)
+        updated.acceptedBudgetOverrun = nil
+        updateDetails(updated, for: stop)
+    }
+
+    func setVisitStatus(_ status: VisitStatus, for stop: RoadStop) {
+        guard stop != start else { return }
+        var updated = waypointDetails(for: stop)
+        updated.status = status
+        updateDetails(updated, for: stop)
+    }
+
+    func setDefaultStageBudget(_ minutes: Int?) {
+        guard defaultStageBudgetMinutes != minutes else { return }
+        defaultStageBudgetMinutes = minutes
+        publishWaypoints()
+    }
 
     var isOptimizing: Bool {
         switch routeStatus {
@@ -151,6 +228,8 @@ final class TripPlannerViewModel: ObservableObject {
         stops = waypoints.stops
         destination = waypoints.destination
         manualOrder = waypoints.manualOrder
+        details = waypoints.details
+        defaultStageBudgetMinutes = waypoints.defaultStageBudgetMinutes
         clearRoute()
         scheduleRouting()
     }
@@ -171,13 +250,14 @@ final class TripPlannerViewModel: ObservableObject {
         orderedWaypoints.contains { $0.matchesMapPlace(stop) }
     }
 
-    func addMapPOI(_ stop: RoadStop) {
+    func addMapPOI(_ stop: RoadStop, asOvernight: Bool = false) {
         guard hasEndpoints, !hasMapPlace(stop) else { return }
-        if manualOrder {
+        if asOvernight || manualOrder || !anchors.isEmpty {
             stops.insert(stop, at: RoadStop.bestInsertionIndex(for: stop, along: orderedWaypoints))
         } else {
             stops.append(stop)
         }
+        if asOvernight { details[stop.id] = WaypointDetails(overnight: true) }
         waypointsChanged()
     }
 
@@ -241,8 +321,17 @@ final class TripPlannerViewModel: ObservableObject {
     }
 
     private func waypointsChanged() {
+        let activeIDs = Set(orderedWaypoints.map(\.id))
+        details = details.filter { activeIDs.contains($0.key) }
         if !manualOrder, let start, let destination {
-            stops = RoadStop.provisionalOrder(start: start, stops: stops, destination: destination)
+            let waypoints = [start] + stops + [destination]
+            stops = TripStage.ranges(in: waypoints, anchors: anchors).flatMap { range in
+                let end = waypoints[range.upperBound]
+                let intermediate = Array(waypoints[(range.lowerBound + 1)..<range.upperBound])
+                let ordered = RoadStop.provisionalOrder(start: waypoints[range.lowerBound],
+                                                        stops: intermediate, destination: end)
+                return end == destination ? ordered : ordered + [end]
+            }
         }
         clearRoute()
         publishWaypoints()
@@ -257,7 +346,8 @@ final class TripPlannerViewModel: ObservableObject {
 
     private func publishWaypoints() {
         onWaypointsChanged?(TripWaypoints(start: start, stops: stops, destination: destination,
-                                          manualOrder: manualOrder))
+                                          manualOrder: manualOrder, details: details,
+                                          defaultStageBudgetMinutes: defaultStageBudgetMinutes))
     }
 
     private func scheduleRouting() {
@@ -271,6 +361,7 @@ final class TripPlannerViewModel: ObservableObject {
             return
         }
         let stops = self.stops
+        let anchors = self.anchors
         let service = routeService
         routeStatus = .preparing
         routingTask = Task { [weak self] in
@@ -284,7 +375,7 @@ final class TripPlannerViewModel: ObservableObject {
                 try await Task.sleep(for: .milliseconds(500))
                 try Task.checkCancellation()
                 let route = try await service.planRoute(
-                    start: start, stops: stops, destination: destination,
+                    start: start, stops: stops, destination: destination, anchors: anchors,
                     onPreview: { [weak self] route in self?.roadPreview = route },
                     onProgress: { [weak self] done, total in
                         self?.completedRequests = done

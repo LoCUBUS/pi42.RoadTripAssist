@@ -35,7 +35,14 @@ struct PlannerUITestFixture {
         let planner = TripPlannerViewModel(routeService: service) { query in
             places.filter { $0.name.localizedCaseInsensitiveContains(query) }
         }
-        return TripLibrary(store: TripStore(url: directory.appending(path: "trips.json")), planner: planner)
+        let library = TripLibrary(store: TripStore(url: directory.appending(path: "trips.json")), planner: planner)
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing-stages"), library.trips.isEmpty {
+            library.updateTrip(id: nil, name: "Etappenreise", notes: "")
+            planner.setStart(places[0])
+            planner.setDestination(places[3])
+            planner.addStop(places[1])
+        }
+        return library
     }
 
     func recordMapsHandoff(_ item: MKMapItem, options: [String: Any]) -> Bool {

@@ -6,6 +6,117 @@ import XCTest
 
 final class ProgressiveRoutingTests: XCTestCase {
     @MainActor
+    func testStageOptimizationKeepsAnchorAndNeverFetchesCrossStageAlternatives() async throws {
+        let start = stop("Start", 50, 0)
+        let a = stop("A", 50, 1)
+        let b = stop("B", 50, 2)
+        let overnight = stop("Overnight", 50, 3)
+        let c = stop("C", 50, 4)
+        let d = stop("D", 50, 5)
+        let finish = stop("Finish", 50, 6)
+        let cheap = Set(["Start-B", "B-A", "A-Overnight", "Overnight-D", "D-C", "C-Finish"])
+        var pairs: [String] = []
+        let service = MapKitRouteService { from, to in
+            let pair = "\(from.name)-\(to.name)"
+            pairs.append(pair)
+            return RouteLeg(duration: cheap.contains(pair) ? 60 : 600, distance: 100,
+                            coordinates: [from.coordinate, to.coordinate])
+        }
+        var preview: PlannedRoute?
+        let result = try await service.planRoute(
+            start: start, stops: [a, b, overnight, c, d], destination: finish, anchors: [overnight.id],
+            onPreview: { preview = $0 }, onProgress: { _, _ in }
+        )
+        XCTAssertEqual(preview?.orderedStops, [a, b, overnight, c, d])
+        XCTAssertEqual(result.orderedStops, [b, a, overnight, d, c])
+        XCTAssertEqual(result.duration, 360)
+        XCTAssertEqual(Set(pairs), cheap.union(["Start-A", "A-B", "B-Overnight", "Overnight-C", "C-D", "D-Finish"]))
+        XCTAssertEqual(pairs.count, 12)
+    }
+
+    @MainActor
+    func testStageTotalsUseOnlyTheirOwnLegsAndCountSharedOvernightStayOnce() async throws {
+        let start = stop("Start", 50, 0)
+        let overnight = stop("Overnight", 50, 1)
+        let finish = stop("Finish", 50, 3)
+        let service = MapKitRouteService { from, to in
+            RouteLeg(duration: Double(to.coordinate.longitude - from.coordinate.longitude) * 600,
+                     distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(
+            start: start, stops: [overnight], destination: finish,
+            details: [start.id: WaypointDetails(stayMinutes: 2),
+                      overnight.id: WaypointDetails(stayMinutes: 15, overnight: true, stageBudgetMinutes: 25),
+                      finish.id: WaypointDetails(stayMinutes: 3)],
+            defaultStageBudgetMinutes: 60
+        ))
+        XCTAssertEqual(model.stages.map(\.waypoints), [[start, overnight], [overnight, finish]])
+        XCTAssertTrue(model.stages.allSatisfy { $0.totalDuration == nil })
+        model.enableAutomaticRouting()
+        for _ in 0..<100 where model.isOptimizing { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertEqual(model.stages.map(\.driveDuration), [600, 1200])
+        XCTAssertEqual(model.stages.map(\.totalDuration), [1620, 1380])
+        XCTAssertEqual(model.stages.map(\.budgetMinutes), [25, 60])
+        XCTAssertEqual(model.stages.map { $0.coordinates.map(\.longitude) }, [[0, 1], [1, 3]])
+        XCTAssertNil(model.stages[0].budgetPlaceholder, "The budget runs out at the planned overnight stop")
+        XCTAssertNil(model.stages[0].budgetOverrun, "Only time before arrival counts for the confirmation")
+        model.setDefaultStageBudget(10)
+        let nextPlaceholder = try XCTUnwrap(model.stages[1].budgetPlaceholder)
+        XCTAssertEqual(nextPlaceholder.afterWaypointID, overnight.id)
+        XCTAssertEqual(nextPlaceholder.coordinate.longitude, 2, accuracy: 0.00001)
+
+        var details = model.waypointDetails(for: overnight)
+        details.stageBudgetMinutes = 10
+        model.updateDetails(details, for: overnight)
+        let overrun = try XCTUnwrap(model.stages[0].budgetOverrun)
+        XCTAssertEqual(overrun.arrivalMinutes - overrun.budgetMinutes, 2)
+        XCTAssertNotNil(model.stages[0].budgetPlaceholder)
+        XCTAssertNil(model.stages[1].budgetOverrun, "A stage without an overnight stop cannot be accepted")
+
+        model.acceptBudgetOverrun(overrun, endingAt: overnight)
+        XCTAssertTrue(model.stages[0].isBudgetOverrunAccepted)
+        XCTAssertNil(model.stages[0].budgetPlaceholder)
+        XCTAssertEqual(model.stages[0].totalDuration, 1620)
+        let saved = try JSONEncoder().encode(model.waypointDetails(for: overnight))
+        XCTAssertEqual(try JSONDecoder().decode(WaypointDetails.self, from: saved).acceptedBudgetOverrun, overrun)
+
+        var startDetails = model.waypointDetails(for: start)
+        startDetails.stayMinutes = 3
+        model.updateDetails(startDetails, for: start)
+        XCTAssertFalse(model.stages[0].isBudgetOverrunAccepted)
+        XCTAssertNotNil(model.stages[0].budgetPlaceholder)
+        let updatedOverrun = try XCTUnwrap(model.stages[0].budgetOverrun)
+        model.acceptBudgetOverrun(updatedOverrun, endingAt: overnight)
+        model.clearBudgetOverrunAcceptance(endingAt: overnight)
+        XCTAssertNotNil(model.stages[0].budgetPlaceholder)
+    }
+
+    func testStageBudgetPlaceholderFollowsRoadGeometryAndIncludesStays() throws {
+        let start = stop("Start", 0, 0)
+        let corner = CLLocationCoordinate2D(latitude: 0, longitude: 1)
+        let pause = stop("Pause", 0, 4)
+        let end = stop("Ende", 0, 5)
+        let legs = [
+            RouteLeg(duration: 1_200, distance: 444_000, coordinates: [start.coordinate, corner, pause.coordinate]),
+            RouteLeg(duration: 600, distance: 111_000, coordinates: [pause.coordinate, end.coordinate])
+        ]
+        func stage(budget: Int?, hasRoute: Bool = true) -> TripStage {
+            TripStage(waypoints: [start, pause, end], legs: hasRoute ? legs : nil, waypointStayMinutes: [5, 10, 0],
+                      budgetMinutes: budget, endsWithOvernight: false)
+        }
+        let onRoad = try XCTUnwrap(stage(budget: 15).budgetPlaceholder)
+        XCTAssertEqual(onRoad.afterWaypointID, start.id)
+        XCTAssertEqual(onRoad.coordinate.longitude, 2, accuracy: 0.00001)
+        let atPause = try XCTUnwrap(stage(budget: 30).budgetPlaceholder)
+        XCTAssertEqual(atPause.afterWaypointID, pause.id)
+        XCTAssertEqual(atPause.coordinate.longitude, pause.coordinate.longitude)
+        XCTAssertNil(stage(budget: 45).budgetPlaceholder)
+        XCTAssertNil(stage(budget: nil).budgetPlaceholder)
+        XCTAssertNil(stage(budget: 15, hasRoute: false).budgetPlaceholder)
+    }
+    @MainActor
     func testMapPOIIsInsertedWithoutChangingManualStopOrderOrAddingDuplicates() {
         let start = stop("Start", 0, 0)
         let a = stop("A", 0, 4)

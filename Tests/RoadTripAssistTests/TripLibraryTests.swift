@@ -3,6 +3,54 @@ import XCTest
 @testable import RoadTripAssist
 
 final class TripLibraryTests: XCTestCase {
+    func testStageBudgetUsesHoursAndMinutesWithoutChangingStoredValues() {
+        XCTAssertEqual(DurationInputFormat.string(390), "06:30")
+        XCTAssertEqual(DurationInputFormat.minutes("06:30"), 390)
+        XCTAssertEqual(DurationInputFormat.minutes("6:30"), 390)
+        XCTAssertEqual(DurationInputFormat.minutes("26:15"), 1575)
+        XCTAssertEqual(DurationInputFormat.minutes(DurationInputFormat.string(Int.max)), Int.max)
+        for invalid in ["390", "06:60", "06:3", "00:00", "-01:30", "1:30:", "\(Int.max):00"] {
+            XCTAssertNil(DurationInputFormat.minutes(invalid), invalid)
+        }
+    }
+
+    func testStayDurationAllowsZeroButRejectsInvalidMinutes() {
+        XCTAssertEqual(DurationInputFormat.minutes("00:00", allowsZero: true), 0)
+        XCTAssertEqual(DurationInputFormat.minutes("01:15", allowsZero: true), 75)
+        XCTAssertNil(DurationInputFormat.minutes("00:60", allowsZero: true))
+    }
+
+    @MainActor
+    func testStageDetailsAndProgressSurviveReopeningAndStayWithTheWaypoint() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appendingPathComponent("trips.json"))
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Etappenreise", notes: "")
+        let start = stop("Start", longitude: 0)
+        let hotel = stop("Hotel", longitude: 1)
+        let finish = stop("Ziel", longitude: 2)
+        library.planner.setStart(start)
+        library.planner.setDestination(finish)
+        library.planner.addStop(hotel)
+        library.planner.setDefaultStageBudget(300)
+        library.planner.updateDetails(WaypointDetails(stayMinutes: 45, notes: "Späte Ankunft", rating: 4,
+                                                       overnight: true, stageBudgetMinutes: 240), for: hotel)
+        library.planner.setVisitStatus(.skipped, for: hotel)
+
+        let reopened = TripLibrary(store: store)
+        let model = reopened.planner
+        XCTAssertEqual(model.stages.map(\.budgetMinutes), [240, 300])
+        XCTAssertEqual(model.waypointDetails(for: hotel),
+                       WaypointDetails(stayMinutes: 45, notes: "Späte Ankunft", rating: 4, status: .skipped,
+                                       overnight: true, stageBudgetMinutes: 240))
+        XCTAssertEqual(model.nextWaypoint, finish)
+        model.setVisitStatus(.pending, for: hotel)
+        XCTAssertEqual(model.nextWaypoint, hotel)
+        model.removeStop(hotel)
+        XCTAssertEqual(model.stages.map(\.id), [finish.id])
+        XCTAssertNil(try store.load().first?.waypoints.details[hotel.id])
+    }
     @MainActor
     func testTripsAndOrderedWaypointsSurviveReopeningAndStaySeparate() async throws {
         let directory = try makeTemporaryDirectory()

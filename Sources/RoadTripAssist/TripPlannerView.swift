@@ -14,7 +14,7 @@ struct TripPlannerView: View {
         if let fixture = PlannerUITestFixture.requested {
             _library = StateObject(wrappedValue: fixture.makeLibrary())
             fixturePOI = ProcessInfo.processInfo.arguments.contains("--ui-testing-poi") ? fixture.mapPOI : nil
-            showMap = fixturePOI != nil
+            showMap = fixturePOI != nil || ProcessInfo.processInfo.arguments.contains("--ui-testing-budget-placeholder")
             launchMaps = ProcessInfo.processInfo.arguments.contains("--ui-testing-open-maps")
                 ? openInAppleMaps : fixture.recordMapsHandoff
             return
@@ -33,6 +33,8 @@ struct TripPlannerView: View {
 }
 
 private struct TripWorkspaceView: View {
+    private static let overnightSearchRadius: CLLocationDistance = 2_500
+
     @ObservedObject var library: TripLibrary
     @ObservedObject var model: TripPlannerViewModel
     let showMap: Bool
@@ -47,6 +49,17 @@ private struct TripWorkspaceView: View {
     @State private var showMapsError = false
     @State private var editor: TripEditorDraft?
     @State private var tripToDelete: RoadTrip?
+    @State private var showStages = false
+    @State private var mapStageID: RoadStop.ID?
+    @State private var waypointEditor: WaypointEditorDraft?
+    @State private var showDefaultBudget = false
+    @State private var overrunStage: TripStage?
+    @State private var stageStopToRemove: RoadStop?
+
+    private var mapStage: TripStage? {
+        guard let mapStageID else { return nil }
+        return model.stages.first { $0.id == mapStageID }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -76,6 +89,10 @@ private struct TripWorkspaceView: View {
         .onChange(of: library.selectedID) { _, _ in
             focusedWaypoint = nil
             clearMapPOI()
+            showStages = false
+            mapStageID = nil
+            overrunStage = nil
+            stageStopToRemove = nil
             if fixturePOI == nil { cameraPosition = .automatic }
         }
         .onChange(of: focusedWaypoint) { _, field in
@@ -85,6 +102,18 @@ private struct TripWorkspaceView: View {
             TripEditorView(draft: draft) { name, notes in
                 library.updateTrip(id: draft.tripID, name: name, notes: notes)
                 editor = nil
+            }
+        }
+        .sheet(item: $waypointEditor) { draft in
+            WaypointDetailsEditor(draft: draft) { updated in
+                model.updateDetails(updated, for: draft.stop)
+                waypointEditor = nil
+            }
+        }
+        .sheet(isPresented: $showDefaultBudget) {
+            StageBudgetEditor(minutes: model.defaultStageBudgetMinutes) { minutes in
+                model.setDefaultStageBudget(minutes)
+                showDefaultBudget = false
             }
         }
         .alert("Reise löschen?", isPresented: Binding(
@@ -108,6 +137,37 @@ private struct TripWorkspaceView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("Das Ziel konnte nicht an Apple Karten übergeben werden.")
+        }
+        .alert("Zwischenziel entfernen?", isPresented: Binding(
+            get: { stageStopToRemove != nil },
+            set: { if !$0 { stageStopToRemove = nil } }
+        ), presenting: stageStopToRemove) { stop in
+            Button("Entfernen", role: .destructive) {
+                if mapStageID == stop.id { showStageOnMap(nil) }
+                model.removeStop(stop)
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: { stop in
+            if model.waypointDetails(for: stop).overnight {
+                Text("„\(stop.name)“ wird aus der Route entfernt. Die angrenzenden Etappen werden zusammengeführt.")
+            } else {
+                Text("„\(stop.name)“ wird aus der Route entfernt.")
+            }
+        }
+        .alert("Zeitüberschreitung bestätigen?", isPresented: Binding(
+            get: { overrunStage != nil },
+            set: { if !$0 { overrunStage = nil } }
+        ), presenting: overrunStage) { stage in
+            Button("Budgetpunkt ausblenden") {
+                if let overrun = stage.budgetOverrun {
+                    model.acceptBudgetOverrun(overrun, endingAt: stage.end)
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: { stage in
+            if let overrun = stage.budgetOverrun {
+                Text("Du erreichst „\(stage.end.name)“ voraussichtlich \(overrun.arrivalMinutes - overrun.budgetMinutes) min nach dem Zeitbudget. Der Budgetpunkt und der Suchkreis werden ausgeblendet. Die Route bleibt unverändert.")
+            }
         }
     }
 
@@ -165,13 +225,25 @@ private struct TripWorkspaceView: View {
     }
 
     private var mapView: some View {
-        MapReader { proxy in
+        let stage = mapStage
+        let visibleStages = showStages ? (stage.map { [$0] } ?? model.stages) : []
+        return MapReader { proxy in
             Map(position: $cameraPosition) {
-                if let route = model.roadPreview {
-                    MapPolyline(coordinates: route.coordinates)
+                let coordinates = stage?.coordinates ?? model.roadPreview?.coordinates ?? []
+                if coordinates.count >= 2 {
+                    MapPolyline(coordinates: coordinates)
                         .stroke(.blue, lineWidth: 4)
                 }
-                ForEach(model.orderedWaypoints) { stop in
+                ForEach(visibleStages) { stage in
+                    if let placeholder = stage.budgetPlaceholder {
+                        MapCircle(center: placeholder.coordinate, radius: Self.overnightSearchRadius)
+                            .foregroundStyle(.clear)
+                            .stroke(.orange, lineWidth: 3)
+                        Marker("Übernachtung suchen", systemImage: "bed.double", coordinate: placeholder.coordinate)
+                            .tint(.orange)
+                    }
+                }
+                ForEach(stage?.waypoints ?? model.orderedWaypoints) { stop in
                     Marker(stop.name, coordinate: stop.coordinate)
                 }
                 ForEach(model.searchResults.prefix(5)) { result in
@@ -256,7 +328,9 @@ private struct TripWorkspaceView: View {
     }
 
     private func poiDetails(_ poi: MapPointOfInterest) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let alreadyInRoute = model.hasMapPlace(poi.stop)
+        let canAdd = library.selectedID != nil && model.hasEndpoints && !alreadyInRoute
+        return VStack(alignment: .leading, spacing: 8) {
             Text("Ort in der Nähe des Klicks").foregroundStyle(.secondary)
             HStack(alignment: .top) {
                 Text(poi.stop.name)
@@ -273,10 +347,16 @@ private struct TripWorkspaceView: View {
                scheme == "https" || scheme == "http" {
                 Link("Website", destination: website)
             }
-            Button("Zur Route hinzufügen", systemImage: "plus.circle") { model.addMapPOI(poi.stop) }
-                .accessibilityIdentifier("add-map-poi")
-                .disabled(library.selectedID == nil || !model.hasEndpoints || model.hasMapPlace(poi.stop))
-            if model.hasMapPlace(poi.stop) {
+            VStack(alignment: .leading, spacing: 6) {
+                Button("Zur Route hinzufügen", systemImage: "plus.circle") { model.addMapPOI(poi.stop) }
+                    .accessibilityIdentifier("add-map-poi")
+                Button("Als Übernachtung hinzufügen", systemImage: "bed.double") {
+                    model.addMapPOI(poi.stop, asOvernight: true)
+                }
+                .accessibilityIdentifier("add-map-poi-overnight")
+            }
+            .disabled(!canAdd)
+            if alreadyInRoute {
                 Text("Bereits in der Route").foregroundStyle(.secondary)
             } else if library.selectedID == nil || !model.hasEndpoints {
                 Text("Wähle eine Reise mit Start und Ziel.").foregroundStyle(.secondary)
@@ -292,14 +372,36 @@ private struct TripWorkspaceView: View {
     private var routeSidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Route planen")
+                Text(showStages ? "Etappen & Reiseverlauf" : "Route planen")
                     .font(.title2.bold())
                 Text("Ortssuche und Routing benötigen Internet. Suchtext, angeklickte Kartenpositionen und Wegpunkt-Koordinaten werden an Apple gesendet.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                Picker("Ansicht", selection: $showStages) {
+                    Text("Route").tag(false)
+                    Text("Etappen").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("planner-mode")
+                .onChange(of: showStages) { _, showStages in
+                    if showStages { dismissWaypointSearch() }
+                    else if mapStageID != nil { showStageOnMap(nil) }
+                }
             }
             .padding(.horizontal)
 
+            if showStages {
+                stageList
+            } else {
+                waypointList
+            }
+
+            routingControls
+        }
+        .padding(.top)
+    }
+
+    private var waypointList: some View {
             List {
                 Section("Wegpunkte") {
                     waypointSearch(.start, title: "Start", icon: "1.circle", id: "start")
@@ -331,7 +433,9 @@ private struct TripWorkspaceView: View {
                 }
             }
             .listStyle(.inset)
+    }
 
+    private var routingControls: some View {
             VStack(alignment: .leading, spacing: 8) {
                 if model.hasEndpoints {
                     if model.manualOrder {
@@ -372,8 +476,189 @@ private struct TripWorkspaceView: View {
             .font(.caption)
             .padding(.horizontal)
             .padding(.bottom)
+    }
+
+    private var stageList: some View {
+        List {
+            if model.hasEndpoints {
+                Section("Reiseverlauf") {
+                    if let next = model.nextWaypoint {
+                        Text("Nächstes Ziel: \(next.name)")
+                            .accessibilityIdentifier("next-waypoint")
+                        HStack {
+                            mapsButton(for: next, id: "open-next-waypoint")
+                            Button("Besucht") { model.setVisitStatus(.visited, for: next) }
+                            Button("Überspringen") { model.setVisitStatus(.skipped, for: next) }
+                                .accessibilityIdentifier("skip-next-waypoint")
+                        }
+                        .buttonStyle(.borderless)
+                    } else {
+                        Text("Keine offenen Ziele mehr.")
+                    }
+                }
+                Section("Etappenplanung") {
+                    Text("Mit dem Bett-Symbol markierst du eine Übernachtung. An einem Zwischenziel endet dort die Etappe.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Standard-Zeitbudget: \(model.defaultStageBudgetMinutes.map(DurationInputFormat.string) ?? "keins")") {
+                        showDefaultBudget = true
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("default-stage-budget")
+                    if mapStage != nil {
+                        Button("Gesamtroute auf der Karte", action: { showStageOnMap(nil) })
+                            .buttonStyle(.borderless)
+                    }
+                }
+                ForEach(Array(model.stages.enumerated()), id: \.element.id) { index, stage in
+                    let placeholder = stage.budgetPlaceholder
+                    Section {
+                        stageSummary(stage, number: index + 1)
+                        if index > 0, let start = stage.waypoints.first {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Abfahrt: \(start.name)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if let placeholder, placeholder.afterWaypointID == start.id {
+                                    budgetPlaceholderRow(placeholder, stage: stage, number: index + 1)
+                                }
+                            }
+                        }
+                        ForEach(index == 0 ? stage.waypoints : Array(stage.waypoints.dropFirst())) { stop in
+                            VStack(alignment: .leading, spacing: 6) {
+                                stageWaypointRow(stop, number: (model.orderedWaypoints.firstIndex(of: stop) ?? 0) + 1)
+                                if let placeholder, placeholder.afterWaypointID == stop.id {
+                                    budgetPlaceholderRow(placeholder, stage: stage, number: index + 1)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Etappe \(index + 1): \(stage.end.name)")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.green)
+                            .accessibilityAddTraits(.isHeader)
+                    }
+                }
+            } else {
+                Text("Wähle Start und Ziel in der Routenansicht, um Etappen zu planen.")
+            }
         }
-        .padding(.top)
+        .listStyle(.inset)
+        .accessibilityIdentifier("stage-list")
+    }
+
+    private func budgetPlaceholderRow(_ placeholder: TripStage.BudgetPlaceholder, stage: TripStage,
+                                      number: Int) -> some View {
+        Button {
+            showStageOnMap(stage.id)
+            let span = Self.overnightSearchRadius * 3.5
+            cameraPosition = .region(MKCoordinateRegion(center: placeholder.coordinate,
+                                                         latitudinalMeters: span, longitudinalMeters: span))
+        } label: {
+            Label("Zeitbudget erreicht · Übernachtung suchen", systemImage: "bed.double")
+                .foregroundStyle(.orange)
+        }
+        .buttonStyle(.borderless)
+        .help("Suchbereich mit 5 km Durchmesser auf der Karte zeigen")
+        .accessibilityIdentifier("budget-placeholder-\(number)")
+    }
+
+    private func stageSummary(_ stage: TripStage, number: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Verweilzeit: \(formatDuration(stage.stayMinutes * 60))")
+            if let drive = stage.driveDuration, let total = stage.totalDuration {
+                Text("Etappenzeit: \(formatDuration(total)) · davon Fahrt: \(formatDuration(drive))")
+                    .fontWeight(.semibold)
+                    .accessibilityIdentifier("stage-totals-\(number)")
+            } else {
+                Text("Etappenzeit: \(formatDuration(stage.stayMinutes * 60)) + ausstehende Fahrzeit")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("stage-totals-\(number)")
+            }
+            if let budget = stage.budgetMinutes {
+                let seconds = Double(budget) * 60
+                Text("Zeitbudget: \(DurationInputFormat.string(budget))")
+                if let total = stage.totalDuration, total > seconds {
+                    Text("Zeitbudget überschritten")
+                        .foregroundStyle(.orange)
+                }
+            }
+            if stage.isBudgetOverrunAccepted {
+                Text("Zeitüberschreitung akzeptiert")
+                Button("Budgetpunkt wieder anzeigen") {
+                    model.clearBudgetOverrunAcceptance(endingAt: stage.end)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("restore-budget-point-\(number)")
+            } else if let overrun = stage.budgetOverrun {
+                Button("Übernachtung \(overrun.arrivalMinutes - overrun.budgetMinutes) min nach Budget bestätigen") {
+                    overrunStage = stage
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("confirm-budget-overrun-\(number)")
+            }
+            Button(mapStageID == stage.id ? "Auf der Karte ausgewählt" : "Etappe auf der Karte zeigen") {
+                showStageOnMap(stage.id)
+            }
+            .accessibilityIdentifier("show-stage-\(number)")
+            .buttonStyle(.borderless)
+            .disabled(mapStageID == stage.id)
+        }
+        .font(.caption)
+    }
+
+    private func stageWaypointRow(_ stop: RoadStop, number: Int) -> some View {
+        let details = model.waypointDetails(for: stop)
+        return HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Label(stop.name, systemImage: "mappin")
+                if stop != model.start {
+                    Text(details.status.title)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("visit-status-\(number)")
+                }
+            }
+            Spacer()
+            Button("Details", systemImage: "info.circle") {
+                waypointEditor = WaypointEditorDraft(stop: stop, details: details, isStart: stop == model.start,
+                                                    isDestination: stop == model.destination)
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .help("Wegpunktdetails bearbeiten")
+            .accessibilityIdentifier("waypoint-details-\(number)")
+            if stop != model.start {
+                let action = details.overnight ? "Übernachtungsmarkierung entfernen" : "Als Übernachtung markieren"
+                Button(action, systemImage: details.overnight ? "bed.double.fill" : "bed.double") {
+                    var updated = model.waypointDetails(for: stop)
+                    updated.overnight.toggle()
+                    if !updated.overnight && stop != model.destination {
+                        updated.stageBudgetMinutes = nil
+                    }
+                    model.updateDetails(updated, for: stop)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help(action)
+                .accessibilityIdentifier("toggle-overnight-\(number)")
+                mapsButton(for: stop, id: "open-stage-waypoint-\(number)")
+            }
+            if stop != model.start && stop != model.destination {
+                Button("Zwischenziel entfernen", systemImage: "minus.circle") {
+                    stageStopToRemove = stop
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("Zwischenziel entfernen")
+                .accessibilityIdentifier("remove-stage-waypoint-\(number)")
+            }
+        }
+    }
+
+    private func showStageOnMap(_ id: RoadStop.ID?) {
+        clearMapPOI()
+        mapStageID = id
+        cameraPosition = .automatic
     }
 
     @ViewBuilder
@@ -464,12 +749,7 @@ private struct TripWorkspaceView: View {
                         .buttonStyle(.borderless)
                         .disabled(index == model.stops.count - 1)
                     }
-                    Button("In Apple Karten öffnen", systemImage: "map") {
-                        openInMaps(stop)
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .accessibilityIdentifier("open-maps-\(id)")
+                    mapsButton(for: stop, id: "open-maps-\(id)")
                 }
                 if let remove {
                     Button("Zwischenziel entfernen", systemImage: "minus.circle", action: remove)
@@ -534,6 +814,16 @@ private struct TripWorkspaceView: View {
         )
     }
 
+    private func mapsButton(for stop: RoadStop, id: String) -> some View {
+        Button("In Apple Karten öffnen", systemImage: "map") {
+            openInMaps(stop)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .help("In Apple Karten öffnen")
+        .accessibilityIdentifier(id)
+    }
+
     private func openInMaps(_ stop: RoadStop) {
         let item = MapKitRouteService.mapItem(for: stop)
         if !launchMaps(item, [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving]) {
@@ -542,7 +832,7 @@ private struct TripWorkspaceView: View {
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {
-        let totalMinutes = Int(duration / 60)
+        guard let totalMinutes = Int(exactly: (duration / 60).rounded(.towardZero)) else { return "—" }
         guard totalMinutes >= 60 else { return "\(totalMinutes) min" }
         return "\(totalMinutes / 60) h \(totalMinutes % 60) min"
     }
@@ -552,6 +842,140 @@ private struct TripWorkspaceView: View {
             return "\(distance.formatted(.number.precision(.fractionLength(0)))) m"
         }
         return "\((distance / 1_000).formatted(.number.precision(.fractionLength(0...1)))) km"
+    }
+}
+
+private struct WaypointEditorDraft: Identifiable {
+    var id: RoadStop.ID { stop.id }
+    let stop: RoadStop
+    let details: WaypointDetails
+    let isStart: Bool
+    let isDestination: Bool
+}
+
+private struct WaypointDetailsEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let draft: WaypointEditorDraft
+    let save: (WaypointDetails) -> Void
+    @State private var details: WaypointDetails
+    @State private var stay: String
+    @State private var budget: String
+
+    init(draft: WaypointEditorDraft, save: @escaping (WaypointDetails) -> Void) {
+        self.draft = draft
+        self.save = save
+        _details = State(initialValue: draft.details)
+        _stay = State(initialValue: DurationInputFormat.string(draft.details.stayMinutes))
+        _budget = State(initialValue: draft.details.stageBudgetMinutes.map(DurationInputFormat.string) ?? "")
+    }
+
+    private var hasStageBudget: Bool { draft.isDestination || (!draft.isStart && details.overnight) }
+    private var stayMinutes: Int? { DurationInputFormat.minutes(stay, allowsZero: true) }
+    private var validBudget: Bool { !hasStageBudget || budget.isEmpty || DurationInputFormat.minutes(budget) != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(draft.stop.name).font(.headline)
+            Form {
+                TextField("Verweilzeit (hh:mm)", text: $stay)
+                    .accessibilityIdentifier("waypoint-stay")
+                if !draft.isStart {
+                    Toggle("Übernachtungsort", isOn: $details.overnight)
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("waypoint-overnight")
+                    Picker("Besuchsstatus", selection: $details.status) {
+                        ForEach(VisitStatus.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                }
+                if hasStageBudget {
+                    TextField("Zeitbudget (hh:mm, optional)", text: $budget)
+                        .accessibilityIdentifier("stage-budget-override")
+                }
+                Picker("Bewertung", selection: $details.rating) {
+                    Text("Keine Bewertung").tag(0)
+                    ForEach(1...5, id: \.self) { Text("\($0) von 5").tag($0) }
+                }
+                LabeledContent("Notiz") {
+                    TextEditor(text: $details.notes)
+                        .frame(minHeight: 72)
+                        .accessibilityIdentifier("waypoint-notes")
+                }
+            }
+            if stayMinutes == nil {
+                Text("Gib die Verweilzeit als Stunden:Minuten ein, z. B. 00:45. Ohne Verweilzeit: 00:00.")
+                    .foregroundStyle(.red)
+            }
+            if !validBudget {
+                Text(DurationInputFormat.invalidBudgetMessage)
+                    .foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button("Abbrechen") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Speichern") {
+                    guard let minutes = stayMinutes, validBudget else { return }
+                    details.stayMinutes = minutes
+                    details.stageBudgetMinutes = hasStageBudget ? DurationInputFormat.minutes(budget) : nil
+                    save(details)
+                }
+                .disabled(stayMinutes == nil || !validBudget)
+                .accessibilityIdentifier("save-waypoint-details")
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+}
+
+enum DurationInputFormat {
+    static let invalidBudgetMessage = "Gib eine Dauer größer als 00:00 ein, z. B. 06:30. Minuten: 00 bis 59."
+
+    static func string(_ minutes: Int) -> String {
+        String(format: "%02ld:%02ld", minutes / 60, minutes % 60)
+    }
+
+    static func minutes(_ input: String, allowsZero: Bool = false) -> Int? {
+        let parts = input.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, parts[1].count == 2,
+              parts.allSatisfy({ $0.utf8.allSatisfy { (48...57).contains($0) } }),
+              let hours = Int(parts[0]), let minutes = Int(parts[1]), minutes < 60,
+              hours <= (Int.max - minutes) / 60 else { return nil }
+        let total = hours * 60 + minutes
+        return total > 0 || allowsZero ? total : nil
+    }
+}
+
+private struct StageBudgetEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var input: String
+    let save: (Int?) -> Void
+
+    init(minutes: Int?, save: @escaping (Int?) -> Void) {
+        _input = State(initialValue: minutes.map(DurationInputFormat.string) ?? "")
+        self.save = save
+    }
+
+    private var valid: Bool { input.isEmpty || DurationInputFormat.minutes(input) != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Standard-Zeitbudget pro Etappe").font(.headline)
+            TextField("Stunden:Minuten (hh:mm)", text: $input)
+                .accessibilityIdentifier("default-stage-budget-input")
+            Text(valid ? "Beispiel: 06:30. Leer lassen, um kein Standardbudget zu setzen." : DurationInputFormat.invalidBudgetMessage)
+                .font(.caption)
+                .foregroundStyle(valid ? Color.secondary : Color.red)
+            HStack {
+                Spacer()
+                Button("Abbrechen") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Speichern") { save(DurationInputFormat.minutes(input)) }
+                    .disabled(!valid)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
     }
 }
 
