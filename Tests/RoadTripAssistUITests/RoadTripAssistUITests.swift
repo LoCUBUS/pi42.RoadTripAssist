@@ -4,6 +4,61 @@ import XCTest
 
 final class RoadTripAssistUITests: XCTestCase {
     @MainActor
+    func testWaypointCategoryAndOvernightSurviveReopening() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments.append("--ui-testing-stages")
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        let stageList = app.descendants(matching: .any)["stage-list"].firstMatch
+        XCTAssertTrue(stageList.waitForExistence(timeout: 5))
+        stageList.scroll(byDeltaX: 0, deltaY: -180)
+        app.buttons["waypoint-details-2"].click()
+        let category = app.popUpButtons["waypoint-category"]
+        XCTAssertTrue(category.waitForExistence(timeout: 5))
+        category.click()
+        app.menuItems["View Point"].click()
+        app.buttons["save-waypoint-details"].click()
+        assertValue("View Point", of: app.descendants(matching: .any)["stage-waypoint-2"].firstMatch)
+        app.buttons["toggle-overnight-2"].click()
+        assertValue("Übernachtung", of: app.descendants(matching: .any)["stage-waypoint-2"].firstMatch)
+        app.terminate()
+
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        let reopenedList = app.descendants(matching: .any)["stage-list"].firstMatch
+        reopenedList.scroll(byDeltaX: 0, deltaY: -180)
+        assertValue("Übernachtung", of: app.descendants(matching: .any)["stage-waypoint-2"].firstMatch)
+        app.buttons["toggle-overnight-2"].click()
+        assertValue("View Point", of: app.descendants(matching: .any)["stage-waypoint-2"].firstMatch)
+        app.buttons["waypoint-details-2"].click()
+        XCTAssertEqual(category.value as? String, "View Point")
+        category.click()
+        app.menuItems["Keine Kategorie"].click()
+        app.buttons["save-waypoint-details"].click()
+        assertValue("Wegpunkt", of: app.descendants(matching: .any)["stage-waypoint-2"].firstMatch)
+    }
+
+    @MainActor
+    func testRouteInspectorCanBeHiddenAndRestored() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments.append("--ui-testing-stages")
+        launchPlanner(app)
+        let route = app.textFields["waypoint-start"]
+        XCTAssertTrue(route.waitForExistence(timeout: 5))
+        let toggle = app.buttons["toggle-route-inspector"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        toggle.click()
+        XCTAssertFalse(route.exists)
+        toggle.click()
+        assertValue("Startstadt", of: route)
+        assertValue("Zielstadt", of: app.textFields["waypoint-destination"])
+    }
+
+    @MainActor
     func testRemovingOvernightStopFromStageRequiresConfirmation() throws {
         continueAfterFailure = false
         let (app, _) = try makeTestApp()

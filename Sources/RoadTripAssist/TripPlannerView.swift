@@ -55,6 +55,7 @@ private struct TripWorkspaceView: View {
     @State private var showDefaultBudget = false
     @State private var overrunStage: TripStage?
     @State private var stageStopToRemove: RoadStop?
+    @State private var showRouteInspector = true
 
     private var mapStage: TripStage? {
         guard let mapStageID else { return nil }
@@ -62,10 +63,10 @@ private struct TripWorkspaceView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        NavigationSplitView {
             tripSidebar
-                .frame(minWidth: 190, idealWidth: 220, maxWidth: 260)
-            Divider()
+                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 260)
+        } detail: {
             Group {
                 if showMap { mapView }
                 else { Color.clear }
@@ -74,16 +75,26 @@ private struct TripWorkspaceView: View {
                 if let selectedPOI { poiDetails(selectedPOI).padding(12) }
             }
             .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            Group {
-                if library.selectedID != nil {
-                    routeSidebar
-                } else {
-                    ContentUnavailableView("Keine Reise ausgewählt", systemImage: "map",
-                                           description: Text("Lege links eine Reise an, um eine Route zu planen."))
+            .inspector(isPresented: $showRouteInspector) {
+                Group {
+                    if library.selectedID != nil {
+                        routeSidebar
+                    } else {
+                        ContentUnavailableView("Keine Reise ausgewählt", systemImage: "map",
+                                               description: Text("Lege links eine Reise an, um eine Route zu planen."))
+                    }
+                }
+                .inspectorColumnWidth(min: 320, ideal: 370, max: 440)
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Route ein- oder ausblenden", systemImage: "sidebar.right") {
+                        showRouteInspector.toggle()
+                    }
+                    .help("Routenplanung ein- oder ausblenden")
+                    .accessibilityIdentifier("toggle-route-inspector")
                 }
             }
-            .frame(minWidth: 320, idealWidth: 370, maxWidth: 440)
         }
         .frame(minWidth: 1000, minHeight: 650)
         .onChange(of: library.selectedID) { _, _ in
@@ -244,7 +255,9 @@ private struct TripWorkspaceView: View {
                     }
                 }
                 ForEach(stage?.waypoints ?? model.orderedWaypoints) { stop in
-                    Marker(stop.name, coordinate: stop.coordinate)
+                    let appearance = waypointAppearance(for: stop)
+                    Marker(stop.name, systemImage: appearance.systemImage, coordinate: stop.coordinate)
+                        .tint(appearance.color)
                 }
                 ForEach(model.searchResults.prefix(5)) { result in
                     Marker(result.name, coordinate: result.coordinate)
@@ -365,8 +378,7 @@ private struct TripWorkspaceView: View {
         .font(.callout)
         .padding(12)
         .frame(width: 255, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .shadow(radius: 4)
+        .glassEffect(in: .rect(cornerRadius: 12))
     }
 
     private var routeSidebar: some View {
@@ -404,7 +416,7 @@ private struct TripWorkspaceView: View {
     private var waypointList: some View {
             List {
                 Section("Wegpunkte") {
-                    waypointSearch(.start, title: "Start", icon: "1.circle", id: "start")
+                    waypointSearch(.start, title: "Start", icon: "play.fill", id: "start")
                     ForEach(Array(model.stops.enumerated()), id: \.element.id) { index, stop in
                         waypointSearch(.stop(stop.id), title: "Zwischenziel \(index + 1)", icon: "mappin",
                                        id: "stop-\(index + 1)") {
@@ -425,7 +437,7 @@ private struct TripWorkspaceView: View {
                         .buttonStyle(.borderless)
                         .disabled(!model.hasEndpoints)
                     }
-                    waypointSearch(.destination, title: "Ziel", icon: "flag", id: "destination")
+                    waypointSearch(.destination, title: "Ziel", icon: "flag.checkered", id: "destination")
                     if model.manualOrder {
                         Button("Nach Luftlinie sortieren", action: model.useProvisionalOrder)
                             .buttonStyle(.borderless)
@@ -609,9 +621,17 @@ private struct TripWorkspaceView: View {
 
     private func stageWaypointRow(_ stop: RoadStop, number: Int) -> some View {
         let details = model.waypointDetails(for: stop)
+        let appearance = waypointAppearance(for: stop)
         return HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Label(stop.name, systemImage: "mappin")
+                Label {
+                    Text(stop.name)
+                } icon: {
+                    Image(systemName: appearance.systemImage)
+                        .foregroundStyle(appearance.color)
+                }
+                .accessibilityValue(details.overnight ? "Übernachtung" : details.category?.title ?? "Wegpunkt")
+                .accessibilityIdentifier("stage-waypoint-\(number)")
                 if stop != model.start {
                     Text(details.status.title)
                         .foregroundStyle(.secondary)
@@ -653,6 +673,11 @@ private struct TripWorkspaceView: View {
                 .accessibilityIdentifier("remove-stage-waypoint-\(number)")
             }
         }
+    }
+
+    private func waypointAppearance(for stop: RoadStop) -> WaypointAppearance {
+        WaypointAppearance(details: model.waypointDetails(for: stop),
+                           isStart: stop == model.start, isDestination: stop == model.destination)
     }
 
     private func showStageOnMap(_ id: RoadStop.ID?) {
@@ -708,10 +733,17 @@ private struct TripWorkspaceView: View {
     private func waypointSearch(_ field: WaypointField, title: String, icon: String, id: String,
                                 remove: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: icon)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
+            let stop = model.waypoint(in: field)
+            let appearance = stop.map { waypointAppearance(for: $0) }
+            Label {
+                Text(title)
+            } icon: {
+                Image(systemName: appearance?.systemImage ?? icon)
+                    .foregroundStyle(appearance?.color ?? .secondary)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
             HStack {
                 TextField("Ort oder POI suchen", text: Binding(
                     get: { model.fieldText(field) },
@@ -845,6 +877,24 @@ private struct TripWorkspaceView: View {
     }
 }
 
+struct WaypointAppearance {
+    let systemImage: String
+    let color: Color
+
+    init(details: WaypointDetails, isStart: Bool, isDestination: Bool) {
+        color = details.overnight ? .blue : details.category == nil ? .red : .green
+        if details.overnight {
+            systemImage = details.systemImage
+        } else if isStart {
+            systemImage = "play.fill"
+        } else if isDestination {
+            systemImage = "flag.checkered"
+        } else {
+            systemImage = details.systemImage
+        }
+    }
+}
+
 private struct WaypointEditorDraft: Identifiable {
     var id: RoadStop.ID { stop.id }
     let stop: RoadStop
@@ -879,6 +929,13 @@ private struct WaypointDetailsEditor: View {
             Form {
                 TextField("Verweilzeit (hh:mm)", text: $stay)
                     .accessibilityIdentifier("waypoint-stay")
+                Picker("Kategorie", selection: $details.category) {
+                    Text("Keine Kategorie").tag(nil as WaypointCategory?)
+                    ForEach(WaypointCategory.allCases, id: \.self) { category in
+                        Label(category.title, systemImage: category.systemImage).tag(Optional(category))
+                    }
+                }
+                .accessibilityIdentifier("waypoint-category")
                 if !draft.isStart {
                     Toggle("Übernachtungsort", isOn: $details.overnight)
                         .toggleStyle(.checkbox)

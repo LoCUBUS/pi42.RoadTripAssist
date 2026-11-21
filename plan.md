@@ -1,12 +1,19 @@
 # RoadTripAssist – Implementierungsplan
 
-**Aktueller Stand (20. November 2026):** Phasen 0–3 sind für den Prototyp funktional abgeschlossen. Die Nachbesserungen an Etappenplanung, Budgetanzeige, Übernachtungssuche und Bedienung gehören zum Stand von Phase 3. Die gezielten Swift- und macOS-UI-Tests sind bestanden; ein vollständiger Testlauf nach den letzten Änderungen steht noch aus.
+**Aktueller Stand (21. November 2026):** Phasen 0–3 sind für den Prototyp funktional abgeschlossen. Etappen, Budget- und Übernachtungssuche, Wegpunktkategorien und die UI-Zwischenphase sind umgesetzt. Nach den letzten Markeränderungen bestanden 11 gezielte Swift-Tests und 2 gezielte macOS-UI-Tests. Ein vollständiger Testlauf nach diesen Änderungen sowie eine separate Sichtprüfung der aktuellen Darstellung stehen noch aus.
 
 **Als Nächstes:** Phase 4 – Fotoverwaltung. Der Google-/Mapbox-Livevergleich bleibt für Phase 7 vorgesehen. Vor Veröffentlichung bleibt die Prüfung der Apple-Vorgaben für alternative Routenanfragen und den Cache offen.
 
+**UI-Zwischenphase:** Die Mindestversion ist auf macOS 27 angehoben. Die App
+verwendet ein natives Split-View-Fenster mit größenveränderlicher Reiseseitenleiste
+und ein- bzw. ausblendbarem Routeninspektor. Die schwebenden POI-Details verwenden
+Liquid Glass; die native Karte und die bestehenden Wegpunktfunktionen bleiben erhalten.
+Hell-/Dunkelmodus, reduzierte Transparenz, erhöhter Kontrast und kleine Fenster
+sind für die überarbeitete Oberfläche noch gesondert visuell zu prüfen.
+
 ## 1. Bestätigte Anforderungen
 
-- Native Anwendung ausschließlich für **macOS**.
+- Native Anwendung ausschließlich für **macOS**, ab Version **27**.
 - Apple Maps/MapKit ist der naheliegende Ausgangspunkt, aber Alternativen sollen vor Festlegung geprüft werden.
 - Die Optimierung soll die **geschätzte Fahrzeit** minimieren und eine passende Reihenfolge der Zwischenstopps vorschlagen. Ein Fahrzeitvorschlag wird erst nach Bestätigung übernommen.
 - **Start und Ziel bleiben fest**; optimiert wird die Reihenfolge der Zwischenstopps.
@@ -67,6 +74,7 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - XCUITest prüft auch Treffer und Klicks ohne Treffer in der echten Kartenansicht mit simulierten Suchergebnissen, die Ortsdetails und das Einfügen erst nach Bestätigung. Ein separater MapKit-Livetest prüft, ob die Umgebungssuche Unbound Coffee in Innsbruck liefert.
 - Die Übergabedaten für Zwischenziel und Ziel werden geprüft; der optionale Smoke-Test prüft zusätzlich, dass Apple Karten tatsächlich ein Fenster öffnet. Es wird nicht die gesamte Reise übergeben.
 - Die Etappentests prüfen direktes Hinzufügen einer Übernachtung von der Karte, Teilen und Zusammenführen von Etappen, Abbrechen und Bestätigen beim Entfernen, aktualisierte Etappenzeit nach einer Verweilzeitänderung sowie Bestätigen und Widerrufen einer Budgetüberschreitung.
+- Weitere gezielte Tests prüfen das Aus- und Einblenden des Routeninspektors, das Speichern, Wiederöffnen und Entfernen einer Wegpunktkategorie sowie die Farb- und Symbolpriorität einschließlich Start, Ziel und Übernachtung. Letztere wird in der Darstellungslogik geprüft; eine visuelle Prüfung sämtlicher Kartenmarker ist nicht automatisiert.
 - Ein Screenshot-Vergleich bei gleichem Kartenausschnitt prüft, dass der Suchkreis eine sichtbare orangefarbene Kontur hat und die Karte innen nicht einfärbt. Ohne explizit transparenten Füllstil hat MapKit den Kreis trotz Kontur gefüllt; der Test erkennt diese Regression.
 - Netzwerkfehler und Wiederholung sind mit simulierten Fehlern im Swift-Paket getestet. Die Verfügbarkeit von Kartenkacheln und das Verhalten bei tatsächlich unterbrochener Netzwerkverbindung werden nicht automatisiert geprüft.
 - Startbefehle stehen in der [README](README.md).
@@ -111,7 +119,8 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - Linke Spalte: Reisen und Reiseverwaltung.
 - Mitte: Karte mit Straßenroute, Wegpunktmarkern und originalen Apple-Kartensymbolen. Ein Kartenklick sucht in einem Radius von höchstens 60 m; die Infobox zeigt den nächsten Treffer zur Bestätigung. Bei keinem Treffer bleibt die Route unverändert.
 - Rechte Spalte: Start, Zwischenziele und Ziel mit direkter Ortssuche, Fortschritt, geschätzter Fahrzeit, Strecke und einem möglichen Vorschlag. Der Vorschlag überschreibt die Route nicht ohne Bestätigung.
-- Der Umschalter „Route / Etappen“ wechselt zwischen Routen- und Etappenliste. Größere grüne Überschriften „Etappe n: …“ kennzeichnen die Teilrouten; kleine Symbolbuttons führen die Wegpunktaktionen aus. Nummerierte Kartenmarker, separat einstellbare Spaltenbreiten und einklappbare Seitenleisten bleiben UX-Ziele.
+- Der Umschalter „Route / Etappen“ wechselt zwischen Routen- und Etappenliste. Größere grüne Überschriften „Etappe n: …“ kennzeichnen die Teilrouten; kleine Symbolbuttons führen die Wegpunktaktionen aus. Reiseseitenleiste und Routeninspektor sind systemeigene, größenveränderliche Bereiche; der Inspektor lässt sich über die Symbolleiste aus- und wieder einblenden. Nummerierte Kartenmarker bleiben ein UX-Ziel.
+- Wegpunkte ohne Kategorie tragen rote, kategorisierte Wegpunkte grüne und Übernachtungen blaue Kartenmarker. In der Wegpunktinfo kann optional Sight Seeing (Fernglas), View Point (Berge), Pause (Tasse), Wanderung (Wanderer) oder Nav-Hilfspunkt (Navigationspfeil) gewählt werden. Karte sowie Routen- und Etappenliste zeigen die Kennzeichnung. Start und Ziel tragen eigene Symbole statt des Kategoriesymbols, behalten aber die Kategoriefarbe. Bei Übernachtungen hat das Bettsymbol samt blauer Farbe Vorrang, ohne die Kategorie zu löschen. Ein noch nicht übernommener Karten-POI wird ebenfalls blau hervorgehoben; Suchtreffer und Budgetpunkt sind orange.
 
 ## 5. Umsetzungsphasen
 
@@ -140,7 +149,7 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 **Etappen und Wegpunktaktionen**
 - Das Bett-Symbol markiert oder entmarkiert eine Übernachtung; ein ausgefülltes Bett zeigt die aktive Markierung. An einem Zwischenziel teilt dies die Route oder führt angrenzende Etappen zusammen. Die letzte Etappe endet immer am Reiseziel. Jede Etappe lässt sich einzeln auf der Karte anzeigen.
 - In den Karten-Ortsdetails stehen „Zur Route hinzufügen“ und „Als Übernachtung hinzufügen“ zur Auswahl. Die zweite Aktion fügt den POI ein und markiert ihn direkt als Etappengrenze. Doppelte POIs werden nicht hinzugefügt. Die Einfügelücke für eine neue Übernachtung wird nach der kleinsten zusätzlichen Luftlinienentfernung gewählt.
-- Das Info-Symbol öffnet Verweilzeit, Notizen, Bewertung und bei Zielen den Besuchsstatus. Das Kartensymbol ist derselbe Button wie in der Routenplanung. Das Minus-Symbol entfernt nur Zwischenziele und erst nach Bestätigung. Beim Entfernen einer Übernachtung nennt der Dialog ausdrücklich das Zusammenführen der angrenzenden Etappen.
+- Das Info-Symbol öffnet Kategorie, Verweilzeit, Notizen, Bewertung und bei Zielen den Besuchsstatus. Eine Kategorie kann auch wieder entfernt werden; alle Angaben bleiben am Wegpunkt gespeichert. Das Kartensymbol ist derselbe Button wie in der Routenplanung. Das Minus-Symbol entfernt nur Zwischenziele und erst nach Bestätigung. Beim Entfernen einer Übernachtung nennt der Dialog ausdrücklich das Zusammenführen der angrenzenden Etappen.
 - Luftlinien- und Fahrzeitoptimierung sortieren nur innerhalb der Etappengrenzen. Die manuelle Reihenfolge bleibt über die Routenansicht änderbar.
 
 **Etappenzeit, Suchkreis und Budgetausnahme**
@@ -168,6 +177,7 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - Tests für Trip-Persistenz, Stoppreihenfolge, Optimierungsintegration, Zeitrechnung, Medienzuordnung und Offline-Export.
 - Providerfehler, API-Limits, leere Suchergebnisse und fehlende Berechtigungen sichtbar und handhabbar machen.
 - Hinweise/Dokumentation zu Netzwerkübertragung von Such- und Routendaten, lokaler Fotokopie und Exportmetadaten.
+- Die modernisierte Oberfläche einschließlich Marker, Liquid Glass, Hell-/Dunkelmodus, Bedienungshilfen und kleiner Fenster visuell prüfen.
 
 ### Phase 7 – Praktischer Vergleich externer Routinganbieter
 - Google Routes und Mapbox mit denselben öffentlichen Beispielreisen hinsichtlich Reihenfolge, Fahrzeit, Grenzen, Kostenmodell, Datenschutz und Kartenbedingungen vergleichen.
@@ -175,7 +185,7 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 
 ## 6. Datenmodell
 
-**Implementiert:** `RoadTrip` speichert ID, Name und Beschreibung. `TripWaypoints` enthält Start, geordnete Zwischenziele, Ziel, die manuelle Sortiereinstellung und das Standard-Zeitbudget. `RoadStop` speichert ID, Name, Untertitel und Koordinaten. Pro Wegpunkt-ID hält `WaypointDetails` Verweilzeit, Notiz, Bewertung, Besuchsstatus, Übernachtungskennzeichen, Etappenbudget und eine optionale Bestätigung der Budgetüberschreitung fest. Budgets und Verweilzeiten werden als Minuten gespeichert; eine Bestätigung enthält zusätzlich die geordneten Wegpunkt-IDs und die bestätigte Ankunftsminute. Etappen und Suchpunkte werden daraus und aus der aktuellen Straßenvorschau abgeleitet. Berechnete Routen und der MapKit-Opt-in werden nicht gespeichert. Ältere Reisen lassen sich ohne diese Felder laden.
+**Implementiert:** `RoadTrip` speichert ID, Name und Beschreibung. `TripWaypoints` enthält Start, geordnete Zwischenziele, Ziel, die manuelle Sortiereinstellung und das Standard-Zeitbudget. `RoadStop` speichert ID, Name, Untertitel und Koordinaten. Pro Wegpunkt-ID hält `WaypointDetails` die optionale Kategorie, Verweilzeit, Notiz, Bewertung, Besuchsstatus, Übernachtungskennzeichen, Etappenbudget und eine optionale Bestätigung der Budgetüberschreitung fest. Budgets und Verweilzeiten werden als Minuten gespeichert; eine Bestätigung enthält die geordneten Wegpunkt-IDs, das Budget und die bestätigte Ankunftsminute. Etappen und Suchpunkte werden daraus und aus der aktuellen Straßenvorschau abgeleitet. Berechnete Routen und der MapKit-Opt-in werden nicht gespeichert. Ältere Reisen ohne Kategorie bleiben lesbar und erhalten zunächst keine Kategorie.
 
 **Entwurf für die weitere Entwicklung (keine Beschreibung des aktuellen JSON-Formats):**
 

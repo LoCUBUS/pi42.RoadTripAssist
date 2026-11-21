@@ -14,6 +14,30 @@ enum VisitStatus: String, Codable, CaseIterable {
     }
 }
 
+enum WaypointCategory: String, Codable, CaseIterable {
+    case sightseeing, viewpoint, pause, hiking, navigation
+
+    var title: String {
+        switch self {
+        case .sightseeing: "Sight Seeing"
+        case .viewpoint: "View Point"
+        case .pause: "Pause"
+        case .hiking: "Wanderung"
+        case .navigation: "Nav-Hilfspunkt"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .sightseeing: "binoculars.fill"
+        case .viewpoint: "mountain.2.fill"
+        case .pause: "cup.and.saucer.fill"
+        case .hiking: "figure.hiking"
+        case .navigation: "location.fill"
+        }
+    }
+}
+
 struct WaypointDetails: Codable, Equatable {
     var stayMinutes = 0
     var notes = ""
@@ -22,6 +46,11 @@ struct WaypointDetails: Codable, Equatable {
     var overnight = false
     var stageBudgetMinutes: Int?
     var acceptedBudgetOverrun: StageBudgetOverrun?
+    var category: WaypointCategory?
+
+    var systemImage: String {
+        overnight ? "bed.double.fill" : category?.systemImage ?? "mappin"
+    }
 }
 
 struct StageBudgetOverrun: Codable, Equatable {

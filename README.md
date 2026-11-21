@@ -6,7 +6,8 @@ stage planning with overnight stops and time budgets.
 
 ## Run
 
-Requires macOS 14 or newer and Xcode with the Swift toolchain installed.
+Requires macOS 27 or newer and Xcode with the macOS 27 SDK and Swift toolchain.
+The app no longer supports macOS 26 or earlier.
 
 ```sh
 swift run
@@ -34,10 +35,13 @@ data. They cover trip editing and persistence, waypoint reordering, distance,
 ordinary and overnight POI insertion, stage splitting and merging, removal
 confirmation, live updates to stage totals after editing stay times, and
 handoff to the next pending Apple Maps destination. They also cover canceling,
-accepting, and reversing a budget overrun. The POI tests use the real map
-view with fixed search results. The overnight-search test compares map
-screenshots at the same zoom to check for a visible orange outline and an
-untinted interior. Default tests neither use real trips nor launch Apple Maps.
+accepting, and reversing a budget overrun, hiding and restoring the route
+inspector, and saving, reopening, and clearing a waypoint category. The POI
+tests use the real map view with fixed search results. The overnight-search
+test compares map screenshots at the same zoom to check for a visible orange
+outline and an untinted interior. Swift tests cover marker color and symbol
+precedence; the UI tests do not visually verify every marker color or symbol.
+Default tests neither use real trips nor launch Apple Maps.
 To also verify that Apple Maps opens with a public landmark as the requested
 destination, prefix the command with `TEST_RUNNER_ROADTRIP_LIVE_MAPS=1`.
 This smoke test checks that Maps comes to the foreground and opens a window,
@@ -70,12 +74,15 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
 ## Prototype scope and limitations
 
 - Use the left sidebar to create, select, edit, and delete trips. Trip names,
-  descriptions, waypoints, stage settings and visit progress are saved in
-  `~/Library/Application Support/RoadTripAssist/trips.json`. Computed routes
-  and the opt-in to automatic routing are not stored.
+  descriptions, waypoints, categories, stage settings and visit progress are
+  saved in `~/Library/Application Support/RoadTripAssist/trips.json`. Computed
+  routes and the opt-in to automatic routing are not stored.
 - Search, map display, and driving directions use Apple MapKit and require an
   internet connection. Search text, clicked map coordinates for nearby places, and
   route coordinates are sent to Apple.
+- The native split view contains the trip sidebar and map. The route and stage
+  planner is shown in a resizable inspector; use the toolbar button to hide
+  or reopen it. The selected place's floating details use Liquid Glass.
 - Zoom in and click a place on the standard Apple map. The original symbols
   remain visible. MapKit searches within a zoom-dependent radius of at most
   60 m and highlights the closest match, which may not be the clicked place.
@@ -101,6 +108,18 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
 - Use the map button beside a waypoint to open that individual destination
   in Apple Maps with driving directions. This does not transfer the entire trip
   or its intermediate stops; Apple Maps determines the route to that point.
+- Waypoints without a category use red map markers; categorized waypoints use
+  green, and overnight stops use blue even if they have no category. In
+  "Etappen", the info button assigns or clears an optional category:
+  Sight Seeing (binoculars), View Point (mountains), Pause (cup), Wanderung
+  (hiker), or Nav-Hilfspunkt (navigation arrow). The same color and symbol
+  appear in the route and stage lists. Start and destination use departure and
+  finish symbols instead of category symbols, but keep the category color.
+  An overnight bed symbol takes precedence over both category and endpoint
+  symbols; removing the overnight designation restores the applicable symbol
+  and color without deleting the category. A temporarily selected map POI is
+  also highlighted in blue until it is added; orange markers represent search
+  results or the overnight budget point, not saved waypoint categories.
 - Opt into automatic routing to see the first street route in the current
   order, then review and accept a faster order when one is found. The app
   displays the road distance for the current route and for any proposal.
@@ -132,8 +151,8 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
    for that stage alone or "Gesamtroute auf der Karte" to return to the whole
    trip. Straight-line and driving-time optimization keep overnight
    boundaries fixed and reorder only within stages.
-2. **Enter stay times and budgets.** Use the info icon to edit a waypoint's
-   stay time, notes and rating. Enter durations as `hh:mm`: `00:45` means
+2. **Enter details and budgets.** Use the info icon to edit a waypoint's
+   category, stay time, notes and rating. Enter durations as `hh:mm`: `00:45` means
    45 minutes and `00:00` means no stay. Set an optional default time budget
    (e.g. `06:30`); the final waypoint of a stage can override it. Leave an
    override blank to inherit the default, or leave the default blank to set

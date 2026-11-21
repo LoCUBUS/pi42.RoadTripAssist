@@ -1,4 +1,5 @@
 import CoreLocation
+import SwiftUI
 import XCTest
 @testable import RoadTripAssist
 
@@ -20,6 +21,50 @@ final class TripLibraryTests: XCTestCase {
         XCTAssertNil(DurationInputFormat.minutes("00:60", allowsZero: true))
     }
 
+    func testLegacyWaypointDetailsDecodeWithoutCategory() throws {
+        let legacy = Data(#"{"stayMinutes":0,"notes":"","rating":0,"status":"pending","overnight":false}"#.utf8)
+        let details = try JSONDecoder().decode(WaypointDetails.self, from: legacy)
+        XCTAssertNil(details.category)
+    }
+
+    func testOvernightSymbolTakesPrecedenceWithoutDiscardingCategory() {
+        for category in WaypointCategory.allCases {
+            var details = WaypointDetails(category: category)
+            XCTAssertEqual(details.systemImage, category.systemImage)
+            details.overnight = true
+            XCTAssertEqual(details.systemImage, "bed.double.fill")
+            details.overnight = false
+            XCTAssertEqual(details.systemImage, category.systemImage)
+            XCTAssertEqual(details.category, category)
+        }
+    }
+
+    func testWaypointAppearanceUsesCategoryOvernightAndEndpointRoles() {
+        let unclassified = WaypointDetails()
+        let classified = WaypointDetails(category: .viewpoint)
+        let overnight = WaypointDetails(overnight: true, category: .viewpoint)
+
+        let plain = WaypointAppearance(details: unclassified, isStart: false, isDestination: false)
+        XCTAssertEqual(plain.color, .red)
+        XCTAssertEqual(plain.systemImage, "mappin")
+        let category = WaypointAppearance(details: classified, isStart: false, isDestination: false)
+        XCTAssertEqual(category.color, .green)
+        XCTAssertEqual(category.systemImage, WaypointCategory.viewpoint.systemImage)
+        let hotel = WaypointAppearance(details: overnight, isStart: false, isDestination: true)
+        XCTAssertEqual(hotel.color, .blue)
+        XCTAssertEqual(hotel.systemImage, "bed.double.fill")
+        let uncategorizedHotel = WaypointAppearance(details: WaypointDetails(overnight: true),
+                                                    isStart: false, isDestination: false)
+        XCTAssertEqual(uncategorizedHotel.color, .blue)
+        XCTAssertEqual(uncategorizedHotel.systemImage, "bed.double.fill")
+        let start = WaypointAppearance(details: unclassified, isStart: true, isDestination: false)
+        XCTAssertEqual(start.color, .red)
+        XCTAssertEqual(start.systemImage, "play.fill")
+        let destination = WaypointAppearance(details: classified, isStart: false, isDestination: true)
+        XCTAssertEqual(destination.color, .green)
+        XCTAssertEqual(destination.systemImage, "flag.checkered")
+    }
+
     @MainActor
     func testStageDetailsAndProgressSurviveReopeningAndStayWithTheWaypoint() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -35,7 +80,8 @@ final class TripLibraryTests: XCTestCase {
         library.planner.addStop(hotel)
         library.planner.setDefaultStageBudget(300)
         library.planner.updateDetails(WaypointDetails(stayMinutes: 45, notes: "Späte Ankunft", rating: 4,
-                                                       overnight: true, stageBudgetMinutes: 240), for: hotel)
+                                                       overnight: true, stageBudgetMinutes: 240,
+                                                       category: .viewpoint), for: hotel)
         library.planner.setVisitStatus(.skipped, for: hotel)
 
         let reopened = TripLibrary(store: store)
@@ -43,7 +89,7 @@ final class TripLibraryTests: XCTestCase {
         XCTAssertEqual(model.stages.map(\.budgetMinutes), [240, 300])
         XCTAssertEqual(model.waypointDetails(for: hotel),
                        WaypointDetails(stayMinutes: 45, notes: "Späte Ankunft", rating: 4, status: .skipped,
-                                       overnight: true, stageBudgetMinutes: 240))
+                                       overnight: true, stageBudgetMinutes: 240, category: .viewpoint))
         XCTAssertEqual(model.nextWaypoint, finish)
         model.setVisitStatus(.pending, for: hotel)
         XCTAssertEqual(model.nextWaypoint, hotel)
