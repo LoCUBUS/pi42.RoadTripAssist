@@ -128,6 +128,10 @@ final class TripLibraryTests: XCTestCase {
         while library.planner.isOptimizing && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+        library.planner.optimizeRoute()
+        while library.planner.isOptimizing && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         XCTAssertEqual(library.planner.suggestion?.orderedStops, [second, first])
         library.planner.acceptSuggestion()
         library.updateTrip(id: nil, name: "Küste", notes: "")
@@ -145,6 +149,7 @@ final class TripLibraryTests: XCTestCase {
         XCTAssertEqual(reopened.selectedTrip?.notes, "Über die Alpen")
         XCTAssertEqual(reopened.planner.orderedWaypoints, [start, second, first, destination])
         XCTAssertEqual(reopened.planner.stops.map { $0.coordinate.longitude }, [2, 1])
+        XCTAssertTrue(reopened.planner.manualOrder)
         XCTAssertFalse(reopened.planner.automaticRouting)
         reopened.select(coastID)
         XCTAssertEqual(reopened.planner.orderedWaypoints, [coastStart])
@@ -153,6 +158,8 @@ final class TripLibraryTests: XCTestCase {
         XCTAssertEqual(reopened.selectedID, tourID)
         XCTAssertEqual(reopened.planner.orderedWaypoints, [start, second, first, destination])
         XCTAssertEqual(try store.load().map(\.id), [tourID])
+        reopened.planner.addStop(stop("Dritter Halt", longitude: 1.5))
+        XCTAssertEqual(Array(reopened.planner.stops.prefix(2)), [second, first])
     }
 
     @MainActor

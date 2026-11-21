@@ -14,14 +14,20 @@ final class RoadTripAssistUITests: XCTestCase {
         let stageList = app.descendants(matching: .any)["stage-list"].firstMatch
         XCTAssertTrue(stageList.waitForExistence(timeout: 5))
         stageList.scroll(byDeltaX: 0, deltaY: -180)
-        app.buttons["waypoint-details-2"].click()
+        app.buttons["stage-waypoint-2"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["inline-waypoint-details"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.sheets.firstMatch.exists)
         let category = app.popUpButtons["waypoint-category"]
         XCTAssertTrue(category.waitForExistence(timeout: 5))
         category.click()
         app.menuItems["View Point"].click()
         app.buttons["save-waypoint-details"].click()
+        XCTAssertFalse(app.descendants(matching: .any)["inline-waypoint-details"].exists)
         assertValue("View Point", of: app.descendants(matching: .any)["stage-waypoint-2"].firstMatch)
-        app.buttons["toggle-overnight-2"].click()
+        app.buttons["waypoint-details-2"].click()
+        app.checkBoxes["waypoint-overnight"].click()
+        app.buttons["save-waypoint-details"].click()
+        XCTAssertTrue(app.buttons["show-stage-2"].waitForExistence(timeout: 5))
         assertValue("Übernachtung", of: app.descendants(matching: .any)["stage-waypoint-2"].firstMatch)
         app.terminate()
 
@@ -38,6 +44,98 @@ final class RoadTripAssistUITests: XCTestCase {
         app.menuItems["Keine Kategorie"].click()
         app.buttons["save-waypoint-details"].click()
         assertValue("Wegpunkt", of: app.descendants(matching: .any)["stage-waypoint-2"].firstMatch)
+    }
+
+    @MainActor
+    func testInlineWaypointDetailsProtectUnsavedChanges() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments.append("--ui-testing-stages")
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        let stageList = app.descendants(matching: .any)["stage-list"].firstMatch
+        stageList.scroll(byDeltaX: 0, deltaY: -180)
+        let row = app.buttons["stage-waypoint-2"]
+        row.click()
+        let stay = app.textFields["waypoint-stay"]
+        XCTAssertTrue(stay.waitForExistence(timeout: 5))
+        stay.click()
+        stay.typeKey("a", modifierFlags: .command)
+        stay.typeText("00:25")
+        app.buttons["waypoint-details-1"].click()
+        XCTAssertTrue(app.sheets["alert"].buttons["Weiter bearbeiten"].waitForExistence(timeout: 5))
+        app.buttons["Weiter bearbeiten"].click()
+        assertValue("00:25", of: stay)
+        app.buttons["new-trip"].click()
+        XCTAssertTrue(app.sheets["alert"].buttons["Weiter bearbeiten"].waitForExistence(timeout: 5))
+        app.buttons["Weiter bearbeiten"].click()
+        assertValue("00:25", of: stay)
+        row.click()
+        XCTAssertTrue(app.sheets["alert"].buttons["Weiter bearbeiten"].waitForExistence(timeout: 5))
+        app.buttons["Weiter bearbeiten"].click()
+        assertValue("00:25", of: stay)
+        app.radioButtons["Route"].click()
+        XCTAssertTrue(app.sheets["alert"].buttons["Weiter bearbeiten"].waitForExistence(timeout: 5))
+        app.buttons["Verwerfen"].click()
+        XCTAssertFalse(app.descendants(matching: .any)["inline-waypoint-details"].exists)
+        app.radioButtons["Etappen"].click()
+        stageList.scroll(byDeltaX: 0, deltaY: -180)
+        row.click()
+        assertValue("00:00", of: stay)
+        app.buttons["cancel-waypoint-details"].click()
+        XCTAssertFalse(app.descendants(matching: .any)["inline-waypoint-details"].exists)
+    }
+
+    @MainActor
+    func testInlineStageBudgetCanBeEditedAndInheritsDefault() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments.append("--ui-testing-stages")
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        app.buttons["default-stage-budget"].click()
+        let defaultBudget = app.textFields["default-stage-budget-input"]
+        XCTAssertTrue(defaultBudget.waitForExistence(timeout: 5))
+        defaultBudget.click()
+        defaultBudget.typeText("06:30")
+        app.buttons["Speichern"].click()
+
+        let heading = app.buttons["stage-details-1"]
+        heading.click()
+        let budget = app.textFields["stage-budget-input"]
+        XCTAssertTrue(budget.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        budget.click()
+        budget.typeText("00:00")
+        XCTAssertFalse(app.buttons["save-stage-budget"].isEnabled)
+        budget.typeKey("a", modifierFlags: .command)
+        budget.typeText("01:15")
+        heading.click()
+        XCTAssertTrue(app.sheets["alert"].buttons["Weiter bearbeiten"].waitForExistence(timeout: 5))
+        app.buttons["Weiter bearbeiten"].click()
+        assertValue("01:15", of: budget)
+        app.radioButtons["Route"].click()
+        XCTAssertTrue(app.sheets["alert"].buttons["Weiter bearbeiten"].waitForExistence(timeout: 5))
+        app.buttons["Weiter bearbeiten"].click()
+        app.buttons["save-stage-budget"].click()
+        XCTAssertTrue(app.staticTexts["Zeitbudget: 01:15"].waitForExistence(timeout: 5))
+
+        app.terminate()
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        XCTAssertTrue(app.staticTexts["Zeitbudget: 01:15"].waitForExistence(timeout: 5))
+        heading.click()
+        assertValue("01:15", of: budget)
+        budget.click()
+        budget.typeKey("a", modifierFlags: .command)
+        budget.typeKey(.delete, modifierFlags: [])
+        app.buttons["save-stage-budget"].click()
+        XCTAssertTrue(app.staticTexts["Zeitbudget: 06:30"].waitForExistence(timeout: 5))
+        heading.click()
+        assertValue("", of: budget)
+        app.buttons["cancel-stage-budget"].click()
     }
 
     @MainActor
@@ -221,6 +319,41 @@ final class RoadTripAssistUITests: XCTestCase {
                           "The map inside the circle must remain unchanged", file: file, line: line)
     }
 
+    private func assertAlternativeLines(before: XCUIScreenshot, shown: XCUIScreenshot, hidden: XCUIScreenshot,
+                                        file: StaticString = #filePath, line: UInt = #line) {
+        guard let before = NSBitmapImageRep(data: before.pngRepresentation),
+              let shown = NSBitmapImageRep(data: shown.pngRepresentation),
+              let hidden = NSBitmapImageRep(data: hidden.pngRepresentation),
+              before.pixelsWide == shown.pixelsWide, before.pixelsHigh == shown.pixelsHigh,
+              before.pixelsWide == hidden.pixelsWide, before.pixelsHigh == hidden.pixelsHigh else {
+            XCTFail("Could not compare map screenshots of the same size", file: file, line: line)
+            return
+        }
+        var appeared = 0
+        var disappeared = 0
+        for y in stride(from: shown.pixelsHigh / 5, to: shown.pixelsHigh, by: 2) {
+            for x in stride(from: 0, to: shown.pixelsWide, by: 2) {
+                guard let original = before.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+                      let purple = shown.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+                      let restored = hidden.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                let changed = max(abs(purple.redComponent - original.redComponent),
+                                  abs(purple.greenComponent - original.greenComponent),
+                                  abs(purple.blueComponent - original.blueComponent)) > 0.1
+                if changed && purple.redComponent - purple.greenComponent > 0.12 &&
+                    purple.blueComponent - purple.greenComponent > 0.12 {
+                    appeared += 1
+                    if max(abs(restored.redComponent - original.redComponent),
+                           abs(restored.greenComponent - original.greenComponent),
+                           abs(restored.blueComponent - original.blueComponent)) < 0.1 {
+                        disappeared += 1
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(appeared, 20, "Alternative lines must be visible", file: file, line: line)
+        XCTAssertGreaterThan(disappeared, 20, "Alternative lines must disappear when hidden", file: file, line: line)
+    }
+
     @MainActor
     func testSplitStageAndSkipToNextMapsDestination() throws {
         continueAfterFailure = false
@@ -271,6 +404,16 @@ final class RoadTripAssistUITests: XCTestCase {
         XCTAssertTrue(app.buttons["show-stage-2"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "value == %@", "Zeitbudget: 01:15"))
             .firstMatch.waitForExistence(timeout: 5))
+        stageList.scroll(byDeltaX: 0, deltaY: 400)
+        app.buttons["stage-details-1"].click()
+        let stageBudget = app.textFields["stage-budget-input"]
+        assertValue("01:15", of: stageBudget)
+        stageBudget.click()
+        stageBudget.typeKey("a", modifierFlags: .command)
+        stageBudget.typeText("01:20")
+        app.buttons["save-stage-budget"].click()
+        XCTAssertTrue(app.staticTexts["Zeitbudget: 01:20"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Zeitbudget: 06:30"].waitForExistence(timeout: 5))
         assertValue("Verweilzeit: 45 min", of: app.staticTexts["Verweilzeit: 45 min"].firstMatch)
         let stageTime = app.staticTexts["stage-totals-1"]
         assertValue("Etappenzeit: 45 min + ausstehende Fahrzeit", of: stageTime)
@@ -392,6 +535,72 @@ final class RoadTripAssistUITests: XCTestCase {
         assertValue("Zielstadt", of: app.textFields["waypoint-destination"])
         app.buttons["Nach Luftlinie sortieren"].click()
         assertValue("Zwischenstadt A", of: app.textFields["waypoint-stop-1"])
+    }
+
+    @MainActor
+    func testOptimizationMustBeRequestedAndAccepted() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments.append("--ui-testing-optimization")
+        launchPlanner(app)
+        createTrip(in: app)
+        choose("Startstadt", in: "start", app: app)
+        choose("Zielstadt", in: "destination", app: app)
+        app.buttons["Zwischenziel hinzufügen"].click()
+        choose("Zwischenstadt A", in: "new-stop", app: app)
+        app.buttons["Zwischenziel hinzufügen"].click()
+        choose("Zwischenstadt B", in: "new-stop", app: app)
+        app.buttons["Automatische Berechnung aktivieren"].click()
+        app.buttons["Aktivieren"].click()
+        assertValue("Strecke: 3 km", of: app.staticTexts["route-distance"])
+        app.buttons["move-up-stop-2"].click()
+        assertValue("Strecke: 5 km", of: app.staticTexts["route-distance"])
+        XCTAssertFalse(app.buttons["Vorschlag übernehmen"].exists)
+        app.buttons["optimize-route"].click()
+        let accept = app.buttons["Vorschlag übernehmen"]
+        XCTAssertTrue(accept.waitForExistence(timeout: 10))
+        assertValue("Zwischenstadt B", of: app.textFields["waypoint-stop-1"])
+        let controls = app.descendants(matching: .any)["routing-controls"].firstMatch
+        XCTAssertTrue(controls.exists)
+        XCTAssertLessThanOrEqual(controls.frame.height, 160, "Routing controls should leave room for the waypoint list")
+        let map = app.descendants(matching: .any)["planner-map"].firstMatch
+        let beforeAlternatives = map.screenshot()
+        app.buttons["alternative-connections"].click()
+        let showAlternatives = app.descendants(matching: .any)["show-alternative-connections"].firstMatch
+        XCTAssertTrue(showAlternatives.waitForExistence(timeout: 5))
+        showAlternatives.click()
+        XCTAssertTrue(app.staticTexts["map-alternatives-indicator"].exists)
+        let shownAlternatives = map.screenshot()
+        let connection = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Startstadt → Zwischenstadt A")
+        ).firstMatch
+        XCTAssertTrue(connection.waitForExistence(timeout: 5))
+        connection.click()
+        XCTAssertTrue(connection.label.contains("ausgewählt"))
+        showAlternatives.click()
+        XCTAssertFalse(app.staticTexts["map-alternatives-indicator"].exists)
+        assertAlternativeLines(before: beforeAlternatives, shown: shownAlternatives, hidden: map.screenshot())
+        app.typeKey(.escape, modifierFlags: [])
+        app.buttons["Vorschlagsdetails"].click()
+        let order = app.staticTexts.matching(
+            NSPredicate(format: "value CONTAINS %@", "Zwischenstadt A → Zwischenstadt B")
+        ).firstMatch
+        XCTAssertTrue(order.waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
+        app.buttons["Vorschlag auf Karte zeigen"].click()
+        XCTAssertTrue(app.buttons["Aktuelle Route auf Karte zeigen"].exists)
+        XCTAssertTrue(app.staticTexts["map-suggestion-indicator"].exists)
+        assertValue("Zwischenstadt B", of: app.textFields["waypoint-stop-1"])
+        app.buttons["Aktuelle Route auf Karte zeigen"].click()
+        XCTAssertFalse(app.staticTexts["map-suggestion-indicator"].exists)
+        accept.click()
+        assertValue("Zwischenstadt A", of: app.textFields["waypoint-stop-1"])
+        assertValue("Strecke: 3 km", of: app.staticTexts["route-distance"])
+        app.terminate()
+        launchPlanner(app)
+        assertValue("Zwischenstadt A", of: app.textFields["waypoint-stop-1"])
+        XCTAssertTrue(app.buttons["Nach Luftlinie sortieren"].exists)
     }
 
     @MainActor

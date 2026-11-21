@@ -34,13 +34,17 @@ The default tests use isolated temporary storage and fixed search and routing
 data. They cover trip editing and persistence, waypoint reordering, distance,
 ordinary and overnight POI insertion, stage splitting and merging, removal
 confirmation, live updates to stage totals after editing stay times, and
-handoff to the next pending Apple Maps destination. They also cover canceling,
-accepting, and reversing a budget overrun, hiding and restoring the route
-inspector, and saving, reopening, and clearing a waypoint category. The POI
-tests use the real map view with fixed search results. The overnight-search
-test compares map screenshots at the same zoom to check for a visible orange
-outline and an untinted interior. Swift tests cover marker color and symbol
-precedence; the UI tests do not visually verify every marker color or symbol.
+handoff to the next pending Apple Maps destination, explicit route
+optimization and acceptance, and showing and hiding alternative connections.
+They also cover the inline waypoint and stage-budget editors, including
+validation, persistence, default-budget inheritance and protection against
+discarding unsaved edits; canceling, accepting, and reversing a budget
+overrun; hiding and restoring the route inspector; and saving, reopening, and
+clearing a waypoint category. The POI tests use the real map view with fixed
+search results. The overnight-search test compares map screenshots at the same
+zoom to check for a visible orange outline and an untinted interior. Swift
+tests cover marker color and symbol precedence; the UI tests do not visually
+verify every marker color or symbol.
 Default tests neither use real trips nor launch Apple Maps.
 To also verify that Apple Maps opens with a public landmark as the requested
 destination, prefix the command with `TEST_RUNNER_ROADTRIP_LIVE_MAPS=1`.
@@ -104,13 +108,15 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   appended in manual mode; map selections are inserted as described above.
   "Nach Luftlinie sortieren" switches back to automatic ordering. When stages
   exist, a stop added by text search goes into the final stage.
-  Routing can still suggest a faster order, which must be explicitly accepted.
+  Use the lock button ("Aktuelle Reihenfolge fixieren") to keep the current
+  order on later edits. Accepting a faster suggestion also fixes it and persists
+  that choice. Hover over the routing symbols for their descriptions.
 - Use the map button beside a waypoint to open that individual destination
   in Apple Maps with driving directions. This does not transfer the entire trip
   or its intermediate stops; Apple Maps determines the route to that point.
 - Waypoints without a category use red map markers; categorized waypoints use
   green, and overnight stops use blue even if they have no category. In
-  "Etappen", the info button assigns or clears an optional category:
+  "Etappen", expand a waypoint row to assign or clear an optional category:
   Sight Seeing (binoculars), View Point (mountains), Pause (cup), Wanderung
   (hiker), or Nav-Hilfspunkt (navigation arrow). The same color and symbol
   appear in the route and stage lists. Start and destination use departure and
@@ -120,18 +126,41 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   and color without deleting the category. A temporarily selected map POI is
   also highlighted in blue until it is added; orange markers represent search
   results or the overnight budget point, not saved waypoint categories.
-- Opt into automatic routing to see the first street route in the current
-  order, then review and accept a faster order when one is found. The app
-  displays the road distance for the current route and for any proposal.
+  An ordinary POI added without a category becomes a red waypoint; an added
+  overnight POI is blue.
+- Opt into automatic routing to calculate the street route in the current
+  order after waypoint changes. Use the "Reihenfolge optimieren" symbol separately to
+  compare orders; the current route stays selected unless you accept the
+  faster proposal. The app shows the duration and distance of both choices,
+  and lets you switch the map between them before acceptance. The info symbol
+  opens the full suggested order and time saving. It offers one
+  best-order proposal, not multiple road alternatives for each leg.
   The optimizer minimizes estimated driving time, not distance. The app
   groups rapid edits and shows the current step: calculating the street route,
   fetching travel times for alternative legs, or comparing stop orders. Each
   MapKit step shows its own request count, and you can pause the calculation.
-- The optimizer reuses directed legs between unchanged waypoints in memory
-  while the planner is open. Without overnight anchors, a fresh five-stop plan
-  needs six MapKit requests for its first street route and 30 for exact
-  optimization. MapKit may throttle requests. If any stage has more than 18
-  movable stops, only the street route in the current order is calculated.
+- During or after optimization, use the "Alternative Verbindungen" symbol to
+  open a popover. Turn "Auf Karte anzeigen" on or off to overlay successfully
+  calculated connections not in the current route as dashed purple lines. The list
+  shows their direction, estimated time and distance and lets you display all
+  or select one.
+  The selected route remains blue and unchanged. These are individual
+  connections considered for reordering, not complete alternative trips or
+  multiple road options for the same connection. Selecting a stage limits the
+  overlay to connections inside it. Waypoint or overnight-boundary changes
+  clear the comparison; available results are kept if optimization fails.
+- Routing reuses directed legs between unchanged waypoints in memory while the
+  planner is open. Inserting a waypoint into a fixed route needs only the two
+  new adjoining legs if the remaining legs are cached. A separate optimization
+  may require additional connections. Without overnight anchors, a fresh
+  five-stop plan needs six MapKit requests for its street route and up to 30
+  in total for exact optimization. MapKit may throttle requests. If any stage
+  has more than 18 movable stops, optimization reports an error; the current
+  street route remains available. Cached legs have no expiry and may become
+  stale; they and the routing opt-in are not saved across app launches.
+  Apple's conditions for optimization requests and in-memory reuse remain
+  unresolved and must be checked before release; showing a proposal or
+  requesting optimization explicitly does not establish compliance.
 - The waypoint search and routing offer a retry after an error. For map
   lookup, click again to retry. Local trips can still be opened and edited
   offline; new place searches and road routes require a connection. A road
@@ -151,12 +180,26 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
    for that stage alone or "Gesamtroute auf der Karte" to return to the whole
    trip. Straight-line and driving-time optimization keep overnight
    boundaries fixed and reorder only within stages.
-2. **Enter details and budgets.** Use the info icon to edit a waypoint's
-   category, stay time, notes and rating. Enter durations as `hh:mm`: `00:45` means
-   45 minutes and `00:00` means no stay. Set an optional default time budget
-   (e.g. `06:30`); the final waypoint of a stage can override it. Leave an
-   override blank to inherit the default, or leave the default blank to set
-   no default budget. "Etappenzeit" adds driving and stay times without
+2. **Enter details and budgets.** Click a waypoint row or its chevron to expand
+   the inline editor for category, stay time, notes and rating, plus overnight
+   and visit status for non-start points. Only one waypoint or stage-budget
+   editor is open at a time. Save or explicitly cancel the changes; collapsing
+   an editor, opening another, changing views or selecting or creating a trip
+   asks before discarding unsaved edits. Removing the edited waypoint or
+   deleting its trip warns that unsaved edits will be lost.
+
+   Enter durations as `hh:mm`: `00:45` means 45 minutes and `00:00` means
+   no stay. Set the optional default time budget for all stages (e.g. `06:30`)
+   in the standard-budget dialog. Click a stage heading to expand its
+   individual budget editor; the same override is also available in the
+   details of the stage's final waypoint. Leave an override blank to inherit
+   the default, or leave the default blank to set no default budget. A set
+   budget must be greater than `00:00`, with minutes from `00` to `59`.
+   The override belongs to the stage's final waypoint; removing an intermediate
+   overnight designation clears its override when the stages merge.
+   The bed button is disabled for the waypoint currently being edited; change
+   its overnight status in its details or close the editor first. "Etappenzeit"
+   adds driving and stay times without
    counting a shared overnight stop twice: its stay belongs to the stage
    that arrives there. Saved stay edits immediately update the stage time,
    without refetching driving directions. If driving time is not yet available,
@@ -185,7 +228,9 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
    Removing an overnight stop merges the adjoining stages. The map icon
    opens just that destination in Apple Maps, using the same button as in
    route planning. In "Reiseverlauf", you can open the next pending destination
-   or mark it visited or skipped. Reset its status to "Offen" in the info
-   dialog if needed. Status changes do not change the route or its times.
+   or mark it visited or skipped. Reset its status to "Offen" in the inline
+   waypoint details if needed. While those details are open, edit that
+   waypoint's status there instead of using the next-destination buttons.
+   Status changes do not change the route or its times.
    Deleting or replacing a waypoint also removes its saved details and any
    attached overnight boundary.

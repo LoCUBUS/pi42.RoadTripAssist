@@ -28,8 +28,10 @@ struct PlannerUITestFixture {
         search.append(RoadStop(name: "Brandenburger Tor", subtitle: "",
                                coordinate: .init(latitude: 52.51627, longitude: 13.37770)))
         let places = search
+        let variableTravelTime = ProcessInfo.processInfo.arguments.contains("--ui-testing-optimization")
         let service = MapKitRouteService { from, to in
-            RouteLeg(duration: 600, distance: 1_000 * abs(from.coordinate.longitude - to.coordinate.longitude),
+            let distance = abs(from.coordinate.longitude - to.coordinate.longitude)
+            return RouteLeg(duration: variableTravelTime ? 600 * distance : 600, distance: 1_000 * distance,
                      coordinates: [from.coordinate, to.coordinate])
         }
         let planner = TripPlannerViewModel(routeService: service) { query in

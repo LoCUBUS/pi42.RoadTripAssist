@@ -75,6 +75,19 @@ struct PlannedRoute {
     var coordinates: [CLLocationCoordinate2D] { legs.flatMap(\.coordinates) }
 }
 
+struct RouteConnection: Identifiable {
+    struct ID: Hashable {
+        let from: RoadStop.ID
+        let to: RoadStop.ID
+    }
+
+    let from: RoadStop
+    let to: RoadStop
+    let leg: RouteLeg
+
+    var id: ID { ID(from: from.id, to: to.id) }
+}
+
 enum RouteCalculationStep: Equatable {
     case streetRoute(done: Int, total: Int)
     case alternativeLegs(done: Int, total: Int)
@@ -103,6 +116,10 @@ final class MapKitRouteService {
 
     init(fetchLeg: (@MainActor (RoadStop, RoadStop) async throws -> RouteLeg?)? = nil) {
         self.fetchLeg = fetchLeg ?? Self.calculateLeg
+    }
+
+    func clearUnavailableLegs() {
+        legs = legs.filter { $0.value.route != nil }
     }
 
     func search(for query: String) async throws -> [RoadStop] {
@@ -152,7 +169,9 @@ final class MapKitRouteService {
         stops: [RoadStop],
         destination: RoadStop,
         anchors: Set<RoadStop.ID> = [],
+        optimize: Bool,
         onPreview: (PlannedRoute?) -> Void,
+        onConnections: ([RouteConnection]) -> Void = { _ in },
         onProgress: (Int, Int) -> Void,
         onStep: (RouteCalculationStep) -> Void = { _ in }
     ) async throws -> PlannedRoute {
@@ -168,7 +187,7 @@ final class MapKitRouteService {
         let largestStage = stages.map { $0.count - 2 }.max() ?? 0
         let supportsExactOptimization = largestStage <= RouteOptimizer.maximumExactStopCount
         var extraPairs: [Pair] = []
-        if supportsExactOptimization {
+        if optimize && supportsExactOptimization {
             let previewSet = Set(previewPairs)
             for stage in stages {
                 let start = stage.lowerBound
@@ -187,6 +206,16 @@ final class MapKitRouteService {
         var fetched = 0
         onProgress(fetched, missingCount)
 
+        func publishConnections() {
+            guard optimize else { return }
+            onConnections(allPairs.compactMap { pair in
+                guard let from = stopsByID[pair.from], let to = stopsByID[pair.to],
+                      let leg = legs[pair]?.route else { return nil }
+                return RouteConnection(from: from, to: to, leg: leg)
+            })
+        }
+
+        publishConnections()
         func loadLegs(_ pairs: [Pair], step: (Int, Int) -> RouteCalculationStep) async throws {
             let pending = pairs.filter { legs[$0] == nil }
             guard !pending.isEmpty else { return }
@@ -199,6 +228,7 @@ final class MapKitRouteService {
                 let leg = try await fetchLeg(from, to)
                 try Task.checkCancellation()
                 legs[pair] = leg.map(CachedLeg.available) ?? .unavailable
+                publishConnections()
                 fetched += 1
                 onProgress(fetched, missingCount)
                 onStep(step(index + 1, pending.count))
@@ -206,7 +236,13 @@ final class MapKitRouteService {
         }
 
         try await loadLegs(previewPairs, step: RouteCalculationStep.streetRoute(done:total:))
-        onPreview(route(for: locations))
+        let preview = route(for: locations)
+        onPreview(preview)
+
+        if !optimize {
+            guard let preview else { throw MapKitRouteError.missingRoute }
+            return preview
+        }
 
         guard supportsExactOptimization else {
             throw RouteOptimizationError.tooManyStops(largestStage)

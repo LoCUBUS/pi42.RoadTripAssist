@@ -23,6 +23,7 @@ final class TripPlannerViewModel: ObservableObject {
     @Published private(set) var defaultStageBudgetMinutes: Int?
     @Published private(set) var roadPreview: PlannedRoute?
     @Published private(set) var suggestion: PlannedRoute?
+    @Published private(set) var optimizationConnections: [RouteConnection] = []
     @Published private(set) var isProvisional = true
     @Published private(set) var automaticRouting = false
     @Published private(set) var completedRequests = 0
@@ -36,6 +37,7 @@ final class TripPlannerViewModel: ObservableObject {
     private let findPlaces: @MainActor (String) async throws -> [RoadStop]
     private var routingTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    private var lastRoutingWasOptimization = false
     var onWaypointsChanged: ((TripWaypoints) -> Void)?
 
     init(routeService: MapKitRouteService? = nil,
@@ -55,6 +57,13 @@ final class TripPlannerViewModel: ObservableObject {
     }
 
     var hasEndpoints: Bool { start != nil && destination != nil }
+
+    var alternativeConnections: [RouteConnection] {
+        let currentPairs = Set(zip(orderedWaypoints, orderedWaypoints.dropFirst()).map {
+            RouteConnection.ID(from: $0.id, to: $1.id)
+        })
+        return optimizationConnections.filter { !currentPairs.contains($0.id) }
+    }
 
     private var anchors: Set<RoadStop.ID> {
         Set(stops.filter { details[$0.id]?.overnight == true }.map(\.id))
@@ -100,6 +109,7 @@ final class TripPlannerViewModel: ObservableObject {
         publishWaypoints()
         if stops.contains(stop), previous.overnight != updated.overnight {
             suggestion = nil
+            optimizationConnections = []
             isProvisional = true
             scheduleRouting()
         }
@@ -292,6 +302,13 @@ final class TripPlannerViewModel: ObservableObject {
         waypointsChanged()
     }
 
+    func fixCurrentOrder() {
+        guard hasEndpoints, !isOptimizing else { return }
+        manualOrder = true
+        suggestion = nil
+        publishWaypoints()
+    }
+
     func canUseAsStart(_ stop: RoadStop) -> Bool {
         stop != start && stop != destination && !stops.contains(stop)
     }
@@ -305,6 +322,19 @@ final class TripPlannerViewModel: ObservableObject {
         scheduleRouting()
     }
 
+    func optimizeRoute() {
+        guard automaticRouting, hasEndpoints, !stops.isEmpty, !isOptimizing else { return }
+        suggestion = nil
+        optimizationConnections = []
+        scheduleRouting(optimize: true)
+    }
+
+    func retryRouting() {
+        guard automaticRouting else { return }
+        routeService.clearUnavailableLegs()
+        scheduleRouting(optimize: lastRoutingWasOptimization)
+    }
+
     func pauseRouting() {
         automaticRouting = false
         routingTask?.cancel()
@@ -315,6 +345,7 @@ final class TripPlannerViewModel: ObservableObject {
         guard let suggestion else { return }
         stops = suggestion.orderedStops
         roadPreview = suggestion
+        manualOrder = true
         isProvisional = false
         self.suggestion = nil
         publishWaypoints()
@@ -341,6 +372,7 @@ final class TripPlannerViewModel: ObservableObject {
     private func clearRoute() {
         roadPreview = nil
         suggestion = nil
+        optimizationConnections = []
         isProvisional = true
     }
 
@@ -350,7 +382,7 @@ final class TripPlannerViewModel: ObservableObject {
                                           defaultStageBudgetMinutes: defaultStageBudgetMinutes))
     }
 
-    private func scheduleRouting() {
+    private func scheduleRouting(optimize: Bool = false) {
         let previous = routingTask
         previous?.cancel()
         completedRequests = 0
@@ -360,6 +392,7 @@ final class TripPlannerViewModel: ObservableObject {
             routeStatus = .idle
             return
         }
+        lastRoutingWasOptimization = optimize
         let stops = self.stops
         let anchors = self.anchors
         let service = routeService
@@ -375,8 +408,9 @@ final class TripPlannerViewModel: ObservableObject {
                 try await Task.sleep(for: .milliseconds(500))
                 try Task.checkCancellation()
                 let route = try await service.planRoute(
-                    start: start, stops: stops, destination: destination, anchors: anchors,
+                    start: start, stops: stops, destination: destination, anchors: anchors, optimize: optimize,
                     onPreview: { [weak self] route in self?.roadPreview = route },
+                    onConnections: { [weak self] connections in self?.optimizationConnections = connections },
                     onProgress: { [weak self] done, total in
                         self?.completedRequests = done
                         self?.totalRequests = total
@@ -384,10 +418,12 @@ final class TripPlannerViewModel: ObservableObject {
                     onStep: { [weak self] step in self?.routeStatus = .running(step) }
                 )
                 try Task.checkCancellation()
-                if let preview = self?.roadPreview, preview.duration <= route.duration {
-                    self?.isProvisional = false
-                } else {
-                    self?.suggestion = route
+                if optimize {
+                    if let preview = self?.roadPreview, preview.duration <= route.duration {
+                        self?.isProvisional = false
+                    } else {
+                        self?.suggestion = route
+                    }
                 }
                 self?.routeStatus = .finished
             } catch {

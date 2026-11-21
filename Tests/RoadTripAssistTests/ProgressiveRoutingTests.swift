@@ -23,15 +23,18 @@ final class ProgressiveRoutingTests: XCTestCase {
                             coordinates: [from.coordinate, to.coordinate])
         }
         var preview: PlannedRoute?
+        var connections: [RouteConnection] = []
         let result = try await service.planRoute(
-            start: start, stops: [a, b, overnight, c, d], destination: finish, anchors: [overnight.id],
-            onPreview: { preview = $0 }, onProgress: { _, _ in }
+            start: start, stops: [a, b, overnight, c, d], destination: finish, anchors: [overnight.id], optimize: true,
+            onPreview: { preview = $0 }, onConnections: { connections = $0 }, onProgress: { _, _ in }
         )
         XCTAssertEqual(preview?.orderedStops, [a, b, overnight, c, d])
         XCTAssertEqual(result.orderedStops, [b, a, overnight, d, c])
         XCTAssertEqual(result.duration, 360)
         XCTAssertEqual(Set(pairs), cheap.union(["Start-A", "A-B", "B-Overnight", "Overnight-C", "C-D", "D-Finish"]))
         XCTAssertEqual(pairs.count, 12)
+        XCTAssertEqual(Set(connections.map { "\($0.from.name)-\($0.to.name)" }), Set(pairs))
+        XCTAssertTrue(connections.allSatisfy { $0.leg.coordinates.count == 2 })
     }
 
     @MainActor
@@ -181,7 +184,7 @@ final class ProgressiveRoutingTests: XCTestCase {
                             distance: fasterPairs.contains(pair) ? 200 : 100, coordinates: [])
         }
         let optimized = try await service.planRoute(
-            start: start, stops: provisional, destination: end,
+            start: start, stops: provisional, destination: end, optimize: true,
             onPreview: { preview in
                 XCTAssertEqual(requests, ["Start-A", "A-B", "B-Ziel"])
                 XCTAssertEqual(preview?.orderedStops, [a, b])
@@ -211,12 +214,12 @@ final class ProgressiveRoutingTests: XCTestCase {
             requests += 1
             return RouteLeg(duration: 1, distance: 100, coordinates: [])
         }
-        _ = try await service.planRoute(start: start, stops: Array(stops.prefix(4)), destination: end,
+        _ = try await service.planRoute(start: start, stops: Array(stops.prefix(4)), destination: end, optimize: true,
                                         onPreview: { _ in }, onProgress: { _, _ in })
         XCTAssertEqual(requests, 20)
         var steps: [RouteCalculationStep] = []
         let result = try await service.planRoute(
-            start: start, stops: stops, destination: end,
+            start: start, stops: stops, destination: end, optimize: true,
             onPreview: { preview in
                 XCTAssertEqual(preview?.orderedStops, stops)
                 XCTAssertEqual(requests, 22)
@@ -231,11 +234,68 @@ final class ProgressiveRoutingTests: XCTestCase {
         XCTAssertTrue(steps.contains(.alternativeLegs(done: 0, total: 8)))
 
         steps.removeAll()
-        _ = try await service.planRoute(start: start, stops: stops, destination: end,
+        _ = try await service.planRoute(start: start, stops: stops, destination: end, optimize: true,
                                         onPreview: { XCTAssertNotNil($0) },
                                         onProgress: { _, total in XCTAssertEqual(total, 0) },
                                         onStep: { steps.append($0) })
         XCTAssertEqual(steps, [.comparingOrders])
+    }
+
+    @MainActor
+    func testFixedRouteInsertsPOIWithOnlyTwoNewLegsAndDoesNotOptimizeAutomatically() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let b = stop("B", 0, 3)
+        let end = stop("Ziel", 0, 4)
+        let poi = stop("POI", 0, 2)
+        var requests: [String] = []
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { from, to in
+            requests.append("\(from.name)-\(to.name)")
+            return RouteLeg(duration: 1, distance: 100, coordinates: [])
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a, b], destination: end))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(requests, ["Start-A", "A-B", "B-Ziel"])
+        XCTAssertNil(model.suggestion)
+        XCTAssertTrue(model.alternativeConnections.isEmpty)
+
+        model.fixCurrentOrder()
+        XCTAssertTrue(model.manualOrder)
+        model.addMapPOI(poi)
+        try await waitForRouting(model)
+        XCTAssertEqual(model.stops, [a, poi, b])
+        XCTAssertEqual(model.roadPreview?.orderedStops, [a, poi, b])
+        XCTAssertEqual(requests, ["Start-A", "A-B", "B-Ziel", "A-POI", "POI-B"])
+        XCTAssertNil(model.suggestion)
+
+        model.removeStop(poi)
+        try await waitForRouting(model)
+        XCTAssertEqual(model.stops, [a, b])
+        XCTAssertEqual(requests.count, 5)
+    }
+
+    @MainActor
+    func testLargeStageCalculatesCurrentRouteButExplicitOptimizationReportsLimit() async throws {
+        let start = stop("Start", 0, 0)
+        let end = stop("Ziel", 0, 20)
+        let stops = (1...19).map { stop("Stop \($0)", 0, Double($0)) }
+        var requests = 0
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { _, _ in
+            requests += 1
+            return RouteLeg(duration: 1, distance: 100, coordinates: [])
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: stops, destination: end, manualOrder: true))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertEqual(requests, 20)
+        model.optimizeRoute()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .failed)
+        XCTAssertNotNil(model.roadPreview)
+        XCTAssertNotNil(model.routingError)
+        XCTAssertEqual(requests, 20)
     }
 
     @MainActor
@@ -265,14 +325,25 @@ final class ProgressiveRoutingTests: XCTestCase {
         while model.isOptimizing && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+        XCTAssertNil(model.suggestion)
+        model.optimizeRoute()
+        try await waitForRouting(model)
         XCTAssertEqual(model.suggestion?.orderedStops, [b, a])
+        XCTAssertEqual(Set(model.alternativeConnections.map { "\($0.from.name)-\($0.to.name)" }),
+                       Set(["Start-B", "B-A", "A-Ziel"]))
         XCTAssertEqual(model.routeStatus, .finished)
         XCTAssertEqual(model.stops, [a, b])
         model.acceptSuggestion()
         XCTAssertEqual(model.stops, [b, a])
+        XCTAssertTrue(model.manualOrder)
         XCTAssertEqual(model.roadPreview?.duration, 3)
         XCTAssertEqual(model.roadPreview?.distance, 600)
         XCTAssertNil(model.suggestion)
+        XCTAssertEqual(Set(model.alternativeConnections.map { "\($0.from.name)-\($0.to.name)" }),
+                       Set(["Start-A", "A-B", "B-Ziel"]))
+        model.addStop(stop("C", 0, 1.5))
+        XCTAssertTrue(model.alternativeConnections.isEmpty)
+        model.pauseRouting()
     }
 
     @MainActor
@@ -315,7 +386,7 @@ final class ProgressiveRoutingTests: XCTestCase {
         let end = stop("Ziel", 0, 3)
         var failAlternative = true
         let model = TripPlannerViewModel(routeService: MapKitRouteService { from, to in
-            if failAlternative && from == start && to == b {
+            if failAlternative && from == a && to == end {
                 throw URLError(.notConnectedToInternet)
             }
             return RouteLeg(duration: 1, distance: 100, coordinates: [])
@@ -326,16 +397,67 @@ final class ProgressiveRoutingTests: XCTestCase {
         model.addStop(b)
         model.enableAutomaticRouting()
         try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .finished)
+        model.optimizeRoute()
+        try await waitForRouting(model)
         XCTAssertEqual(model.routeStatus, .failed)
         XCTAssertEqual(model.roadPreview?.orderedStops, [a, b])
         XCTAssertTrue(model.routingError?.contains("Internetverbindung") == true)
+        XCTAssertEqual(model.alternativeConnections.map { "\($0.from.name)-\($0.to.name)" }, ["Start-B"])
 
         failAlternative = false
-        model.enableAutomaticRouting()
+        model.retryRouting()
         try await waitForRouting(model)
         XCTAssertEqual(model.routeStatus, .finished)
         XCTAssertNil(model.routingError)
         XCTAssertEqual(model.roadPreview?.orderedStops, [a, b])
+        XCTAssertEqual(model.alternativeConnections.count, 3)
+    }
+
+    @MainActor
+    func testChangingOvernightBoundaryClearsAlternativeConnections() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let b = stop("B", 0, 2)
+        let end = stop("Ziel", 0, 3)
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { _, _ in
+            RouteLeg(duration: 1, distance: 100, coordinates: [])
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a, b], destination: end))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        model.optimizeRoute()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.alternativeConnections.count, 3)
+        var details = model.waypointDetails(for: a)
+        details.overnight = true
+        model.updateDetails(details, for: a)
+        XCTAssertTrue(model.alternativeConnections.isEmpty)
+        try await waitForRouting(model)
+        XCTAssertEqual(model.roadPreview?.orderedStops, [a, b])
+        XCTAssertTrue(model.alternativeConnections.isEmpty)
+    }
+
+    @MainActor
+    func testUnavailableCurrentLegReportsFailureAndCanBeRetried() async throws {
+        let start = stop("Start", 0, 0)
+        let end = stop("Ziel", 0, 1)
+        var available = false
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { _, _ in
+            available ? RouteLeg(duration: 1, distance: 100, coordinates: []) : nil
+        })
+        model.setStart(start)
+        model.setDestination(end)
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .failed)
+        XCTAssertNil(model.roadPreview)
+        XCTAssertNotNil(model.routingError)
+        available = true
+        model.retryRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertNotNil(model.roadPreview)
     }
 
     @MainActor
@@ -366,6 +488,38 @@ final class ProgressiveRoutingTests: XCTestCase {
         XCTAssertEqual(model.roadPreview?.orderedStops, [b, a])
         XCTAssertEqual(model.stops, [b, a])
         XCTAssertNil(model.routingError)
+    }
+
+    @MainActor
+    func testEditingDuringOptimizationCancelsItAndCalculatesOnlyTheNewOrder() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let b = stop("B", 0, 2)
+        let end = stop("Ziel", 0, 3)
+        let alternativeStarted = expectation(description: "Alternative request started")
+        var requests: [String] = []
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { from, to in
+            let pair = "\(from.name)-\(to.name)"
+            requests.append(pair)
+            if pair == "Start-B" {
+                alternativeStarted.fulfill()
+                try await Task.sleep(for: .seconds(5))
+            }
+            return RouteLeg(duration: 1, distance: 100, coordinates: [])
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a, b], destination: end))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        model.optimizeRoute()
+        await fulfillment(of: [alternativeStarted], timeout: 2)
+        model.removeStop(b)
+        XCTAssertTrue(model.alternativeConnections.isEmpty)
+        try await waitForRouting(model)
+        XCTAssertEqual(model.roadPreview?.orderedStops, [a])
+        XCTAssertNil(model.suggestion)
+        XCTAssertNil(model.routingError)
+        XCTAssertTrue(model.alternativeConnections.isEmpty)
+        XCTAssertEqual(requests, ["Start-A", "A-B", "B-Ziel", "Start-B", "A-Ziel"])
     }
 
     @MainActor
@@ -538,7 +692,14 @@ final class ProgressiveRoutingTests: XCTestCase {
         XCTAssertFalse(model.isOptimizing, "Benchmark timed out.")
         XCTAssertNil(model.routingError)
         XCTAssertEqual(previewRequests, stops.count + 1)
-        XCTAssertEqual(model.completedRequests, stops.count * (stops.count + 1))
+        XCTAssertEqual(model.completedRequests, stops.count + 1)
+        model.optimizeRoute()
+        while model.isOptimizing && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(model.isOptimizing, "Optimization benchmark timed out.")
+        XCTAssertNil(model.routingError)
+        XCTAssertEqual(model.completedRequests, stops.count * (stops.count + 1) - (stops.count + 1))
         let preview = try XCTUnwrap(model.roadPreview)
         let result = model.suggestion ?? preview
         XCTAssertEqual(result.orderedStops.count, stops.count)
@@ -548,7 +709,8 @@ final class ProgressiveRoutingTests: XCTestCase {
         XCTAssertGreaterThan(result.distance, 0)
         XCTAssertFalse(result.coordinates.isEmpty)
         print("OPTIMIZED: \(routeName(result.orderedStops)), " +
-              "\(result.duration / 60) min after \(requestStart.duration(to: clock.now)), \(model.completedRequests) requests")
+              "\(result.duration / 60) min after \(requestStart.duration(to: clock.now)), " +
+              "\(model.completedRequests + (previewRequests ?? 0)) total requests")
     }
 
     private func stop(_ name: String, _ latitude: Double, _ longitude: Double) -> RoadStop {
