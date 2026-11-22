@@ -150,7 +150,7 @@ final class RoadTripAssistUITests: XCTestCase {
         let toggle = app.buttons["toggle-route-inspector"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         toggle.click()
-        XCTAssertFalse(route.exists)
+        XCTAssertTrue(route.waitForNonExistence(timeout: 5))
         toggle.click()
         assertValue("Startstadt", of: route)
         assertValue("Zielstadt", of: app.textFields["waypoint-destination"])
@@ -538,11 +538,47 @@ final class RoadTripAssistUITests: XCTestCase {
     }
 
     @MainActor
+    func testOptimizationControlIsAlwaysVisibleBesideAutomaticRouting() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        launchPlanner(app)
+        createTrip(in: app)
+        let optimize = app.buttons["optimize-route"]
+        let automaticRouting = app.buttons["Automatische Berechnung aktivieren"]
+        XCTAssertTrue(optimize.waitForExistence(timeout: 5))
+        XCTAssertFalse(optimize.isEnabled)
+        XCTAssertTrue(automaticRouting.exists)
+        XCTAssertGreaterThanOrEqual(automaticRouting.frame.minX, optimize.frame.maxX)
+        XCTAssertLessThanOrEqual(automaticRouting.frame.minX - optimize.frame.maxX, 12)
+        choose("Startstadt", in: "start", app: app)
+        choose("Zielstadt", in: "destination", app: app)
+        XCTAssertFalse(optimize.isEnabled)
+        app.buttons["Zwischenziel hinzufügen"].click()
+        choose("Zwischenstadt A", in: "new-stop", app: app)
+        XCTAssertFalse(optimize.isEnabled)
+        automaticRouting.click()
+        app.buttons["Aktivieren"].click()
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: optimize)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed)
+        let pause = app.buttons["Automatische Berechnung pausieren"]
+        XCTAssertGreaterThanOrEqual(pause.frame.minX, optimize.frame.maxX)
+        XCTAssertLessThanOrEqual(pause.frame.minX - optimize.frame.maxX, 12)
+        app.radioButtons["Etappen"].click()
+        XCTAssertTrue(optimize.exists)
+        optimize.click()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "fahrzeitgeprüft"))
+            .firstMatch.waitForExistence(timeout: 10))
+        pause.click()
+        XCTAssertFalse(optimize.isEnabled)
+    }
+
+    @MainActor
     func testOptimizationMustBeRequestedAndAccepted() throws {
         continueAfterFailure = false
         let (app, _) = try makeTestApp()
         defer { app.terminate() }
-        app.launchArguments.append("--ui-testing-optimization")
+        app.launchArguments += ["--ui-testing-optimization", "--ui-testing-main-display"]
         launchPlanner(app)
         createTrip(in: app)
         choose("Startstadt", in: "start", app: app)

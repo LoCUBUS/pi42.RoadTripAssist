@@ -45,6 +45,8 @@ search results. The overnight-search test compares map screenshots at the same
 zoom to check for a visible orange outline and an untinted interior. Swift
 tests cover marker color and symbol precedence; the UI tests do not visually
 verify every marker color or symbol.
+On multi-monitor setups, the optimization screenshot test moves its test
+window to the main display.
 Default tests neither use real trips nor launch Apple Maps.
 To also verify that Apple Maps opens with a public landmark as the requested
 destination, prefix the command with `TEST_RUNNER_ROADTRIP_LIVE_MAPS=1`.
@@ -129,8 +131,12 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   An ordinary POI added without a category becomes a red waypoint; an added
   overnight POI is blue.
 - Opt into automatic routing to calculate the street route in the current
-  order after waypoint changes. Use the "Reihenfolge optimieren" symbol separately to
-  compare orders; the current route stays selected unless you accept the
+  order after waypoint changes. For a selected trip, the "Reihenfolge
+  optimieren" symbol remains visible next to the automatic-routing control;
+  it is enabled when start,
+  destination and at least one intermediate stop are set, automatic routing is
+  on, and no calculation is running. Use it separately to compare orders; the
+  current route stays selected unless you accept the
   faster proposal. The app shows the duration and distance of both choices,
   and lets you switch the map between them before acceptance. The info symbol
   opens the full suggested order and time saving. It offers one

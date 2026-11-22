@@ -1,3 +1,4 @@
+import AppKit
 import MapKit
 import SwiftUI
 
@@ -30,6 +31,22 @@ struct TripPlannerView: View {
     var body: some View {
         TripWorkspaceView(library: library, model: library.planner, showMap: showMap,
                           launchMaps: launchMaps, fixturePOI: fixturePOI)
+            #if UI_TEST_SUPPORT
+            .onAppear {
+                if PlannerUITestFixture.requested != nil
+                    && ProcessInfo.processInfo.arguments.contains("--ui-testing-main-display") {
+                    DispatchQueue.main.async {
+                        guard let window = NSApp.windows.first(where: \.isVisible),
+                              let screen = NSScreen.screens.first else {
+                            NSLog("Could not position the UI test window on the main display.")
+                            return
+                        }
+                        window.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX + 30,
+                                                      y: screen.visibleFrame.maxY - window.frame.height - 30))
+                    }
+                }
+            }
+            #endif
     }
 }
 
@@ -590,12 +607,6 @@ private struct TripWorkspaceView: View {
                         .help("Aktuelle Reihenfolge fixieren")
                         .disabled(model.isOptimizing)
                     }
-                    Button("Reihenfolge optimieren", systemImage: "arrow.triangle.branch") {
-                        model.optimizeRoute()
-                    }
-                    .help("Reihenfolge nach Fahrzeit optimieren")
-                    .accessibilityIdentifier("optimize-route")
-                    .disabled(!model.automaticRouting || model.isOptimizing)
                 }
                 if !availableAlternativeConnections.isEmpty {
                     Button("Alternative Verbindungen", systemImage: "point.3.connected.trianglepath.dotted") {
@@ -609,6 +620,12 @@ private struct TripWorkspaceView: View {
                     }
                 }
                 Spacer()
+                Button("Reihenfolge optimieren", systemImage: "arrow.triangle.branch") {
+                    model.optimizeRoute()
+                }
+                .help(optimizationHelp)
+                .accessibilityIdentifier("optimize-route")
+                .disabled(!model.hasEndpoints || model.stops.isEmpty || !model.automaticRouting || model.isOptimizing)
                 if model.automaticRouting {
                     Button("Automatische Berechnung pausieren", systemImage: "pause.circle", action: model.pauseRouting)
                         .help("Automatische Berechnung pausieren")
@@ -627,6 +644,14 @@ private struct TripWorkspaceView: View {
         .padding(.bottom, 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("routing-controls")
+    }
+
+    private var optimizationHelp: String {
+        if !model.hasEndpoints { return "Start und Ziel für die Optimierung wählen" }
+        if model.stops.isEmpty { return "Für die Optimierung ein Zwischenziel hinzufügen" }
+        if !model.automaticRouting { return "Automatische Berechnung für die Optimierung aktivieren" }
+        if model.isOptimizing { return "Berechnung läuft" }
+        return "Reihenfolge nach Fahrzeit optimieren"
     }
 
     private func suggestionDetails(_ proposal: PlannedRoute) -> some View {
