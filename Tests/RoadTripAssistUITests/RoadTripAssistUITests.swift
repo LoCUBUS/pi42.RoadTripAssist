@@ -230,7 +230,9 @@ final class RoadTripAssistUITests: XCTestCase {
         continueAfterFailure = false
         let (app, _) = try makeTestApp()
         defer { app.terminate() }
-        app.launchArguments += ["--ui-testing-stages", "--ui-testing-budget-placeholder"]
+        app.launchArguments += [
+            "--ui-testing-stages", "--ui-testing-budget-placeholder", "--ui-testing-main-display"
+        ]
         launchPlanner(app)
         app.radioButtons["Etappen"].click()
         app.buttons["default-stage-budget"].click()

@@ -45,8 +45,8 @@ search results. The overnight-search test compares map screenshots at the same
 zoom to check for a visible orange outline and an untinted interior. Swift
 tests cover marker color and symbol precedence; the UI tests do not visually
 verify every marker color or symbol.
-On multi-monitor setups, the optimization screenshot test moves its test
-window to the main display.
+On multi-monitor setups, screenshot tests move their test window to the main
+display.
 Default tests neither use real trips nor launch Apple Maps.
 To also verify that Apple Maps opens with a public landmark as the requested
 destination, prefix the command with `TEST_RUNNER_ROADTRIP_LIVE_MAPS=1`.
