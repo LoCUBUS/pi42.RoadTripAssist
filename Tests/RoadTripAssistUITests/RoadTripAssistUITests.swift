@@ -47,6 +47,45 @@ final class RoadTripAssistUITests: XCTestCase {
     }
 
     @MainActor
+    func testRouteWaypointCardShowsAndEditsCategoryAndStay() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        launchPlanner(app)
+        createTrip(in: app)
+        choose("Startstadt", in: "start", app: app)
+        choose("Zielstadt", in: "destination", app: app)
+        app.buttons["Zwischenziel hinzufügen"].click()
+        choose("Zwischenstadt A", in: "new-stop", app: app)
+
+        let summary = app.descendants(matching: .any)["waypoint-summary-stop-1"].firstMatch
+        XCTAssertTrue(summary.waitForExistence(timeout: 5))
+        XCTAssertTrue(summary.label.contains("Keine Kategorie"), "Unexpected summary label: \(summary.label)")
+        XCTAssertTrue(summary.label.contains("00:00"))
+        app.buttons["route-waypoint-details-stop-1"].click()
+        let category = app.popUpButtons["waypoint-category"]
+        XCTAssertTrue(category.waitForExistence(timeout: 5))
+        category.click()
+        app.menuItems["View Point"].click()
+        let stay = app.textFields["waypoint-stay"]
+        stay.click()
+        stay.typeKey("a", modifierFlags: .command)
+        stay.typeText("00:45")
+        app.buttons["save-waypoint-details"].click()
+        XCTAssertTrue(summary.label.contains("View Point"))
+        XCTAssertTrue(summary.label.contains("00:45"))
+
+        app.radioButtons["Etappen"].click()
+        let stageList = app.descendants(matching: .any)["stage-list"].firstMatch
+        XCTAssertTrue(stageList.waitForExistence(timeout: 5))
+        stageList.scroll(byDeltaX: 0, deltaY: -180)
+        let stageWaypoint = app.buttons["stage-waypoint-2"]
+        assertValue("View Point", of: stageWaypoint)
+        stageWaypoint.click()
+        assertValue("00:45", of: app.textFields["waypoint-stay"])
+    }
+
+    @MainActor
     func testInlineWaypointDetailsProtectUnsavedChanges() throws {
         continueAfterFailure = false
         let (app, _) = try makeTestApp()

@@ -40,11 +40,13 @@ They also cover the inline waypoint and stage-budget editors, including
 validation, persistence, default-budget inheritance and protection against
 discarding unsaved edits; canceling, accepting, and reversing a budget
 overrun; hiding and restoring the route inspector; and saving, reopening, and
-clearing a waypoint category. The POI tests use the real map view with fixed
-search results. The overnight-search test compares map screenshots at the same
-zoom to check for a visible orange outline and an untinted interior. Swift
-tests cover marker color and symbol precedence; the UI tests do not visually
-verify every marker color or symbol.
+clearing a waypoint category. They also verify that a route card displays and
+edits a waypoint's category and stay duration, and that the saved values appear
+in the stage list. The POI tests use the real map view with fixed search
+results. The overnight-search test compares map screenshots at the same zoom
+to check for a visible orange outline and an untinted interior. Swift tests
+cover marker color and symbol precedence; the UI tests do not visually verify
+every marker color or symbol.
 On multi-monitor setups, screenshot tests move their test window to the main
 display.
 Default tests neither use real trips nor launch Apple Maps.
@@ -117,12 +119,13 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   in Apple Maps with driving directions. This does not transfer the entire trip
   or its intermediate stops; Apple Maps determines the route to that point.
 - Waypoints without a category use red map markers; categorized waypoints use
-  green, and overnight stops use blue even if they have no category. In
-  "Etappen", expand a waypoint row to assign or clear an optional category:
-  Sight Seeing (binoculars), View Point (mountains), Pause (cup), Wanderung
-  (hiker), or Nav-Hilfspunkt (navigation arrow). The same color and symbol
-  appear in the route and stage lists. Start and destination use departure and
-  finish symbols instead of category symbols, but keep the category color.
+  green, and overnight stops use blue even if they have no category. The Route
+  cards show each selected waypoint's category and stay duration; expand the
+  details there or in "Etappen" to edit them. Categories include Sight Seeing
+  (binoculars), View Point (mountains), Pause (cup), Wanderung (hiker), and
+  Nav-Hilfspunkt (navigation arrow). The same color and symbol appear in the
+  route and stage lists. Start and destination use departure and finish symbols
+  instead of category symbols, but keep the category color.
   An overnight bed symbol takes precedence over both category and endpoint
   symbols; removing the overnight designation restores the applicable symbol
   and color without deleting the category. A temporarily selected map POI is

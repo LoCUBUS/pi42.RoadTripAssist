@@ -786,14 +786,7 @@ private struct TripWorkspaceView: View {
                                 ForEach(index == 0 ? stage.waypoints : Array(stage.waypoints.dropFirst())) { stop in
                                     stageWaypointRow(stop, number: (model.orderedWaypoints.firstIndex(of: stop) ?? 0) + 1)
                                     if let draft = waypointEditor, draft.id == stop.id, !draft.isStageBudget {
-                                        WaypointDetailsEditor(draft: draft) { edited, minutes in
-                                            let current = model.waypointDetails(for: edited.stop)
-                                            model.updateDetails(edited.merging(current, stayMinutes: minutes), for: edited.stop)
-                                            waypointEditor = nil
-                                        } cancel: {
-                                            waypointEditor = nil
-                                        }
-                                        .id("waypoint-editor-\(stop.id)")
+                                        waypointDetailsEditor(draft)
                                         .onAppear {
                                             DispatchQueue.main.async {
                                                 proxy.scrollTo("waypoint-editor-\(stop.id)", anchor: .bottom)
@@ -990,6 +983,17 @@ private struct TripWorkspaceView: View {
         requestWaypointAction(expanded ? .close : .open(stop))
     }
 
+    private func waypointDetailsEditor(_ draft: WaypointEditorDraft) -> some View {
+        WaypointDetailsEditor(draft: draft) { edited, minutes in
+            let current = model.waypointDetails(for: edited.stop)
+            model.updateDetails(edited.merging(current, stayMinutes: minutes), for: edited.stop)
+            waypointEditor = nil
+        } cancel: {
+            waypointEditor = nil
+        }
+        .id("waypoint-editor-\(draft.id)")
+    }
+
     private func requestWaypointAction(_ action: WaypointEditorAction) {
         if waypointEditor?.hasChanges == true {
             pendingWaypointAction = action
@@ -1121,11 +1125,41 @@ private struct TripWorkspaceView: View {
                         .disabled(index == model.stops.count - 1)
                     }
                     mapsButton(for: stop, id: "open-maps-\(id)")
+                    let expanded = waypointEditor?.id == stop.id && waypointEditor?.isStageBudget == false
+                    Button(expanded ? "Wegpunktdetails einklappen" : "Wegpunktdetails ausklappen",
+                           systemImage: expanded ? "chevron.up" : "chevron.down") {
+                        toggleWaypointDetails(stop)
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help(expanded ? "Wegpunktdetails einklappen" : "Wegpunktdetails ausklappen")
+                    .accessibilityIdentifier("route-waypoint-details-\(id)")
                 }
                 if let remove {
                     Button("Zwischenziel entfernen", systemImage: "minus.circle", action: remove)
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
+                }
+            }
+            if let stop {
+                let details = model.waypointDetails(for: stop)
+                HStack(spacing: 8) {
+                    Label(details.category?.title ?? "Keine Kategorie",
+                          systemImage: details.category?.systemImage ?? "tag")
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text("Verweilzeit: \(DurationInputFormat.string(details.stayMinutes))")
+                        .lineLimit(1)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                    "Kategorie: \(details.category?.title ?? "Keine Kategorie"), Verweilzeit: \(DurationInputFormat.string(details.stayMinutes))"
+                )
+                .accessibilityIdentifier("waypoint-summary-\(id)")
+                if let draft = waypointEditor, draft.id == stop.id, !draft.isStageBudget {
+                    waypointDetailsEditor(draft)
                 }
             }
             if model.searchField == field {
