@@ -88,6 +88,19 @@ struct RouteConnection: Identifiable {
     var id: ID { ID(from: from.id, to: to.id) }
 }
 
+struct UnavailableRouteConnection: Identifiable {
+    let from: RoadStop
+    let to: RoadStop
+    let underlyingError: Error?
+    var id: RouteConnection.ID { .init(from: from.id, to: to.id) }
+}
+
+struct RouteRequestFailure {
+    let from: RoadStop
+    let to: RoadStop
+    let error: Error
+}
+
 enum RouteCalculationStep: Equatable {
     case streetRoute(done: Int, total: Int)
     case alternativeLegs(done: Int, total: Int)
@@ -103,7 +116,7 @@ final class MapKitRouteService {
 
     private enum CachedLeg {
         case available(RouteLeg)
-        case unavailable
+        case unavailable(Error?)
 
         var route: RouteLeg? {
             if case let .available(leg) = self { return leg }
@@ -112,10 +125,19 @@ final class MapKitRouteService {
     }
 
     private var legs: [Pair: CachedLeg] = [:]
-    private let fetchLeg: @MainActor (RoadStop, RoadStop) async throws -> RouteLeg?
+    private var cachedDepartureDate: Date?
+    private let fetchLeg: @MainActor (RoadStop, RoadStop, Date?) async throws -> RouteLeg?
+    private let findParking: @MainActor (RoadStop) async throws -> [RoadStop]
 
-    init(fetchLeg: (@MainActor (RoadStop, RoadStop) async throws -> RouteLeg?)? = nil) {
+    init(fetchLeg: (@MainActor (RoadStop, RoadStop, Date?) async throws -> RouteLeg?)? = nil,
+         findParking: (@MainActor (RoadStop) async throws -> [RoadStop])? = nil) {
         self.fetchLeg = fetchLeg ?? Self.calculateLeg
+        self.findParking = findParking ?? Self.searchParking
+    }
+
+    convenience init(fetchLeg: @escaping @MainActor (RoadStop, RoadStop) async throws -> RouteLeg?,
+                     findParking: (@MainActor (RoadStop) async throws -> [RoadStop])? = nil) {
+        self.init(fetchLeg: { from, to, _ in try await fetchLeg(from, to) }, findParking: findParking)
     }
 
     func clearUnavailableLegs() {
@@ -170,12 +192,18 @@ final class MapKitRouteService {
         destination: RoadStop,
         anchors: Set<RoadStop.ID> = [],
         optimize: Bool,
+        departureDate: Date? = nil,
         onPreview: (PlannedRoute?) -> Void,
+        onCurrentConnections: ([RouteConnection], [UnavailableRouteConnection], [RouteRequestFailure]) -> Void = { _, _, _ in },
         onConnections: ([RouteConnection]) -> Void = { _ in },
         onProgress: (Int, Int) -> Void,
         onStep: (RouteCalculationStep) -> Void = { _ in }
     ) async throws -> PlannedRoute {
         try Task.checkCancellation()
+        if departureDate != cachedDepartureDate {
+            legs.removeAll()
+            cachedDepartureDate = departureDate
+        }
         let locations = [start] + stops + [destination]
         let activeIDs = Set(locations.map(\.id))
         guard activeIDs.count == locations.count else {
@@ -206,7 +234,19 @@ final class MapKitRouteService {
         var fetched = 0
         onProgress(fetched, missingCount)
 
+        var previewFailures: [RouteRequestFailure] = []
         func publishConnections() {
+            let current = previewPairs.compactMap { pair -> RouteConnection? in
+                guard let from = stopsByID[pair.from], let to = stopsByID[pair.to],
+                      let leg = legs[pair]?.route else { return nil }
+                return RouteConnection(from: from, to: to, leg: leg)
+            }
+            let unavailable = previewPairs.compactMap { pair -> UnavailableRouteConnection? in
+                guard case .unavailable(let error)? = legs[pair],
+                      let from = stopsByID[pair.from], let to = stopsByID[pair.to] else { return nil }
+                return UnavailableRouteConnection(from: from, to: to, underlyingError: error)
+            }
+            onCurrentConnections(current, unavailable, previewFailures)
             guard optimize else { return }
             onConnections(allPairs.compactMap { pair in
                 guard let from = stopsByID[pair.from], let to = stopsByID[pair.to],
@@ -216,7 +256,9 @@ final class MapKitRouteService {
         }
 
         publishConnections()
-        func loadLegs(_ pairs: [Pair], step: (Int, Int) -> RouteCalculationStep) async throws {
+        var firstPreviewError: Error?
+        func loadLegs(_ pairs: [Pair], continueAfterError: Bool,
+                      step: (Int, Int) -> RouteCalculationStep) async throws {
             let pending = pairs.filter { legs[$0] == nil }
             guard !pending.isEmpty else { return }
             onStep(step(0, pending.count))
@@ -225,9 +267,36 @@ final class MapKitRouteService {
                 guard let from = stopsByID[pair.from], let to = stopsByID[pair.to] else {
                     throw RouteOptimizationError.invalidStopIndices
                 }
-                let leg = try await fetchLeg(from, to)
+                let leg: RouteLeg?
+                do {
+                    leg = try await fetchLeg(from, to, departureDate)
+                } catch {
+                    try Task.checkCancellation()
+                    if (error as? MKError)?.code == .directionsNotFound {
+                        legs[pair] = .unavailable(error)
+                        publishConnections()
+                        fetched += 1
+                        onProgress(fetched, missingCount)
+                        onStep(step(index + 1, pending.count))
+                        continue
+                    }
+                    let requestError: Error
+                    if case MapKitRouteError.timeout = error {
+                        requestError = error
+                    } else {
+                        requestError = MapKitRouteError.requestFailed(from: from.name, to: to.name, underlying: error)
+                    }
+                    guard continueAfterError else { throw requestError }
+                    if firstPreviewError == nil { firstPreviewError = requestError }
+                    previewFailures.append(RouteRequestFailure(from: from, to: to, error: requestError))
+                    publishConnections()
+                    fetched += 1
+                    onProgress(fetched, missingCount)
+                    onStep(step(index + 1, pending.count))
+                    continue
+                }
                 try Task.checkCancellation()
-                legs[pair] = leg.map(CachedLeg.available) ?? .unavailable
+                legs[pair] = leg.map(CachedLeg.available) ?? .unavailable(nil)
                 publishConnections()
                 fetched += 1
                 onProgress(fetched, missingCount)
@@ -235,19 +304,20 @@ final class MapKitRouteService {
             }
         }
 
-        try await loadLegs(previewPairs, step: RouteCalculationStep.streetRoute(done:total:))
+        try await loadLegs(previewPairs, continueAfterError: true, step: RouteCalculationStep.streetRoute(done:total:))
         let preview = route(for: locations)
         onPreview(preview)
+        if let firstPreviewError { throw firstPreviewError }
 
         if !optimize {
-            guard let preview else { throw MapKitRouteError.missingRoute }
+            guard let preview else { throw missingRouteError(for: locations) }
             return preview
         }
 
         guard supportsExactOptimization else {
             throw RouteOptimizationError.tooManyStops(largestStage)
         }
-        try await loadLegs(extraPairs, step: RouteCalculationStep.alternativeLegs(done:total:))
+        try await loadLegs(extraPairs, continueAfterError: false, step: RouteCalculationStep.alternativeLegs(done:total:))
         if !stops.isEmpty { onStep(.comparingOrders) }
 
         let matrices = stages.map { stage in
@@ -265,14 +335,19 @@ final class MapKitRouteService {
                 return (order + [end]).map { stage.lowerBound + $0 }
             }
         }
-        let order = try await withTaskCancellationHandler {
-            try await optimization.value
-        } onCancel: {
-            optimization.cancel()
+        let order: [Int]
+        do {
+            order = try await withTaskCancellationHandler {
+                try await optimization.value
+            } onCancel: {
+                optimization.cancel()
+            }
+        } catch RouteOptimizationError.noCompleteRoute where preview == nil {
+            throw missingRouteError(for: locations)
         }
         try Task.checkCancellation()
         guard let route = route(for: [start] + order.map { locations[$0] }) else {
-            throw MapKitRouteError.missingRoute
+            throw missingRouteError(for: [start] + order.map { locations[$0] })
         }
         return route
     }
@@ -281,11 +356,72 @@ final class MapKitRouteService {
         zip(locations, locations.dropFirst()).map { Pair(from: $0.id, to: $1.id) }
     }
 
+    private func missingRouteError(for locations: [RoadStop]) -> MapKitRouteError {
+        let unavailable = zip(locations, locations.dropFirst()).compactMap { from, to -> String? in
+            guard case .unavailable? = legs[Pair(from: from.id, to: to.id)] else { return nil }
+            return "„\(from.name)“ → „\(to.name)“"
+        }
+        return .missingRoute(unavailable)
+    }
+
     private func route(for locations: [RoadStop]) -> PlannedRoute? {
         let pairs = pathPairs(locations)
         let available = pairs.compactMap { legs[$0]?.route }
         guard available.count == pairs.count else { return nil }
         return PlannedRoute(orderedStops: Array(locations.dropFirst().dropLast()), legs: available)
+    }
+
+    func accessibleParking(near waypoint: RoadStop, previous: RoadStop?, next: RoadStop?,
+                           departureDate: Date? = nil) async throws -> [RoadStop] {
+        let candidates = try await findParking(waypoint)
+        var result: [RoadStop] = []
+        for candidate in candidates.prefix(5) {
+            try Task.checkCancellation()
+            if let previous, try await !parkingConnectionAvailable(from: previous, to: candidate, departureDate: departureDate) { continue }
+            if let next, try await !parkingConnectionAvailable(from: candidate, to: next, departureDate: departureDate) { continue }
+            result.append(candidate)
+        }
+        return result
+    }
+
+    private func parkingConnectionAvailable(from: RoadStop, to: RoadStop, departureDate: Date?) async throws -> Bool {
+        do {
+            return try await fetchLeg(from, to, departureDate) != nil
+        } catch {
+            try Task.checkCancellation()
+            if (error as? MKError)?.code == .directionsNotFound { return false }
+            throw error
+        }
+    }
+
+    private static func searchParking(near waypoint: RoadStop) async throws -> [RoadStop] {
+        let request = MKLocalPointsOfInterestRequest(center: waypoint.coordinate, radius: 2_000)
+        request.pointOfInterestFilter = MKPointOfInterestFilter(including: [.parking])
+        let search = MKLocalSearch(request: request)
+        let response = try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await search.start()
+        } onCancel: {
+            Task { @MainActor in search.cancel() }
+        }
+        try Task.checkCancellation()
+        let origin = CLLocation(latitude: waypoint.coordinate.latitude, longitude: waypoint.coordinate.longitude)
+        return response.mapItems.compactMap { item -> RoadStop? in
+            guard let name = item.name, !name.isEmpty else { return nil }
+            let coordinate: CLLocationCoordinate2D
+            let subtitle: String
+            if #available(macOS 26.0, *) {
+                coordinate = item.location.coordinate
+                subtitle = item.addressRepresentations?.fullAddress(includingRegion: true, singleLine: true) ?? ""
+            } else {
+                coordinate = item.placemark.coordinate
+                subtitle = item.placemark.title ?? ""
+            }
+            guard origin.distance(from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)) <= 2_000 else {
+                return nil
+            }
+            return RoadStop(name: name, subtitle: subtitle, coordinate: coordinate)
+        }.sorted { $0.distance(to: waypoint) < $1.distance(to: waypoint) }
     }
 
     static func mapItem(for stop: RoadStop) -> MKMapItem {
@@ -300,12 +436,17 @@ final class MapKitRouteService {
         return item
     }
 
-    private static func calculateLeg(from: RoadStop, to: RoadStop) async throws -> RouteLeg? {
+    static func directionsRequest(from: RoadStop, to: RoadStop, departureDate: Date?) -> MKDirections.Request {
         let request = MKDirections.Request()
         request.source = mapItem(for: from)
         request.destination = mapItem(for: to)
         request.transportType = .automobile
+        request.departureDate = departureDate
+        return request
+    }
 
+    private static func calculateLeg(from: RoadStop, to: RoadStop, departureDate: Date?) async throws -> RouteLeg? {
+        let request = directionsRequest(from: from, to: to, departureDate: departureDate)
         let directions = MKDirections(request: request)
         var timedOut = false
         let timeout = Task {
@@ -326,7 +467,6 @@ final class MapKitRouteService {
         } catch {
             try Task.checkCancellation()
             if timedOut { throw MapKitRouteError.timeout(from.name, to.name) }
-            if (error as? MKError)?.code == .directionsNotFound { return nil }
             throw error
         }
         try Task.checkCancellation()
@@ -358,15 +498,21 @@ final class MapKitRouteService {
 }
 
 enum MapKitRouteError: Error, LocalizedError {
-    case missingRoute
+    case missingRoute([String])
     case timeout(String, String)
+    case requestFailed(from: String, to: String, underlying: Error)
 
     var errorDescription: String? {
         switch self {
-        case .missingRoute:
-            "MapKit hat keine durchgehende Autoroute gefunden."
+        case .missingRoute(let connections):
+            if connections.isEmpty {
+                return "MapKit hat keine durchgehende Autoroute gefunden."
+            }
+            return "Für diese Verbindungen wurde keine Autoroute gefunden: \(connections.joined(separator: ", ")). MapKit nennt weder den betroffenen Wegpunkt noch den Grund. Prüfe beide Punkte und ihre Zufahrt; falls nötig, suche einen Parkplatz in der Nähe und gehe den Rest zu Fuß."
         case let .timeout(from, to):
-            "MapKit hat für \(from) → \(to) nicht rechtzeitig geantwortet."
+            return "MapKit hat für \(from) → \(to) nicht rechtzeitig geantwortet."
+        case let .requestFailed(from, to, underlying):
+            return "Fehler bei der Verbindung „\(from)“ → „\(to)“: \(underlying.localizedDescription)"
         }
     }
 }

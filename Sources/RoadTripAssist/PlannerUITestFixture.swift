@@ -29,7 +29,12 @@ struct PlannerUITestFixture {
                                coordinate: .init(latitude: 52.51627, longitude: 13.37770)))
         let places = search
         let variableTravelTime = ProcessInfo.processInfo.arguments.contains("--ui-testing-optimization")
+        let failRoute = ProcessInfo.processInfo.arguments.contains("--ui-testing-routing-error")
         let service = MapKitRouteService { from, to in
+            if failRoute && from.name == "Startstadt" {
+                throw NSError(domain: MKErrorDomain, code: Int(MKError.Code.directionsNotFound.rawValue),
+                              userInfo: [NSLocalizedDescriptionKey: "Test-Routenfehler"])
+            }
             let distance = abs(from.coordinate.longitude - to.coordinate.longitude)
             return RouteLeg(duration: variableTravelTime ? 600 * distance : 600, distance: 1_000 * distance,
                      coordinates: [from.coordinate, to.coordinate])
@@ -43,6 +48,17 @@ struct PlannerUITestFixture {
             planner.setStart(places[0])
             planner.setDestination(places[3])
             planner.addStop(places[1])
+        }
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing-photo"), let tripID = library.selectedID,
+           library.selectedTrip?.photos.isEmpty == true {
+            Task {
+                do {
+                    let data = try Data(contentsOf: directory.appending(path: "test-photo.jpg"))
+                    try await library.addPhoto(data: data, originalName: "test-photo.jpg", tripID: tripID)
+                } catch {
+                    preconditionFailure("Could not import UI test photo: \(error)")
+                }
+            }
         }
         return library
     }

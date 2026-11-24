@@ -42,11 +42,23 @@ discarding unsaved edits; canceling, accepting, and reversing a budget
 overrun; hiding and restoring the route inspector; and saving, reopening, and
 clearing a waypoint category. They also verify that a route card displays and
 edits a waypoint's category and stay duration, and that the saved values appear
-in the stage list. The POI tests use the real map view with fixed search
-results. The overnight-search test compares map screenshots at the same zoom
-to check for a visible orange outline and an untinted interior. Swift tests
-cover marker color and symbol precedence; the UI tests do not visually verify
-every marker color or symbol.
+in the stage list. Photo tests cover EXIF date/GPS parsing, geolocation-based
+assignment suggestions, local copy and persistence, and persistent photo
+rotation; a UI test opens the photo manager for a selected trip. The POI tests use the real map view with
+fixed search results. The overnight-search test compares map screenshots at
+the same zoom to check for a visible orange outline and an untinted interior.
+Swift tests cover marker color and symbol precedence; the UI tests do not
+visually verify every marker color or symbol.
+The departure-date UI test enables a start date and time, reopens the trip,
+and removes it again. Swift tests additionally check legacy data, per-trip
+storage and selection, MapKit request construction, cache invalidation,
+optimization, missing legs and parking checks. Photo tests also cover reuse of
+an existing waypoint and restoration of media and metadata after a failed
+save. A UI regression test exercises deletion from the photo map popover. In
+the latest UI run, 17 tests passed and the optional Maps smoke test was skipped;
+one other test failed to launch the app but passed when retried separately.
+The system Photos and file pickers and every hover animation are not covered by
+these automated tests.
 On multi-monitor setups, screenshot tests move their test window to the main
 display.
 Default tests neither use real trips nor launch Apple Maps.
@@ -82,12 +94,28 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
 ## Prototype scope and limitations
 
 - Use the left sidebar to create, select, edit, and delete trips. Trip names,
-  descriptions, waypoints, categories, stage settings and visit progress are
+  descriptions, optional departure dates, waypoints, categories, stage settings and visit progress are
   saved in `~/Library/Application Support/RoadTripAssist/trips.json`. Computed
-  routes and the opt-in to automatic routing are not stored.
+  routes and the opt-in to automatic routing are not stored. The app reopens
+  the last selected trip; that selection is saved separately in
+  `selected-trip.json`.
 - Search, map display, and driving directions use Apple MapKit and require an
-  internet connection. Search text, clicked map coordinates for nearby places, and
-  route coordinates are sent to Apple.
+  internet connection. Search text, clicked map coordinates for nearby places,
+  route coordinates and any selected departure date are sent to Apple.
+- When creating a trip or using "Bearbeiten", enable "Reisestart festlegen"
+  to choose a start date and time; disable it to remove the date. The sidebar
+  shows the selected date in the Mac's current time zone. The stored value is
+  an absolute point in time, so its displayed local time can change when the
+  time zone changes. Existing trips have no departure date until one is set.
+  Without one, MapKit receives no departure date and uses its own defaults.
+- MapKit receives the same trip departure date and time for every current and
+  alternative driving connection, including parking-access checks. This is a
+  planning approximation: travel times, waypoint stays and overnight stops do
+  not advance the departure time of later legs. Changing or removing the date
+  clears cached legs and route suggestions and recalculates the current route
+  if automatic routing is enabled; optimization must be started again.
+  MapKit may use the date to adjust its estimates, but does not guarantee a
+  route or ignore current road closures. Check actual conditions before travel.
 - The native split view contains the trip sidebar and map. The route and stage
   planner is shown in a resizable inspector; use the toolbar button to hide
   or reopen it. The selected place's floating details use Liquid Glass.
@@ -105,6 +133,9 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
 - Type directly in the start and destination fields; results appear below
   the active field as you type. Once both are set, use the plus button to
   add an intermediate stop the same way. Existing stops can be edited in place.
+  Clicking the heading above an existing waypoint centers the map with
+  approximately 10 km around it; names in the stage list and unavailable
+  connections work too.
   A waypoint changes only after you select a result (Return selects the first).
   Intermediate stops are initially ordered by straight-line distance
   (an insertion heuristic for more than ten stops). Use the up/down arrows
@@ -119,11 +150,13 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   in Apple Maps with driving directions. This does not transfer the entire trip
   or its intermediate stops; Apple Maps determines the route to that point.
 - Waypoints without a category use red map markers; categorized waypoints use
-  green, and overnight stops use blue even if they have no category. The Route
+  green, except photo waypoints, which are purple until they have a stay
+  duration and then turn green. Overnight stops use blue even if they have no
+  category. The Route
   cards show each selected waypoint's category and stay duration; expand the
   details there or in "Etappen" to edit them. Categories include Sight Seeing
   (binoculars), View Point (mountains), Pause (cup), Wanderung (hiker), and
-  Nav-Hilfspunkt (navigation arrow). The same color and symbol appear in the
+  Nav-Hilfspunkt (navigation arrow), and Foto (photo). The same color and symbol appear in the
   route and stage lists. Start and destination use departure and finish symbols
   instead of category symbols, but keep the category color.
   An overnight bed symbol takes precedence over both category and endpoint
@@ -133,6 +166,27 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   results or the overnight budget point, not saved waypoint categories.
   An ordinary POI added without a category becomes a red waypoint; an added
   overnight POI is blue.
+- Open "Fotos verwalten" for the selected trip to import multiple images from
+  the Photos library or Files. The app keeps local copies and does not change
+  the source images. It reads EXIF capture time and GPS data when available;
+  geotagged photos appear as small thumbnails on the route map and in the photo
+  manager. Clicking a thumbnail on either map opens a larger photo popup.
+  Icon-only rotate controls appear in the photo's upper corners while hovering;
+  the popup also has the saved description, a waypoint action and a delete
+  action with confirmation. Selecting one in the manager also centers its map
+  on that location. Rotation
+  is stored with the trip without changing the local image copy. With a route
+  start and destination set, a photo location can be added as a waypoint and
+  assigned to that waypoint;
+  locations within 50 m of an existing waypoint reuse that waypoint.
+  GPS suggests a nearby waypoint (within 2 km), route segment (within 2 km), or
+  stage (within 20 km of a waypoint). Suggestions are never applied
+  automatically: confirm one or assign the photo manually. Captions and
+  assignments are saved with the trip. Photo files and metadata are stored
+  locally. If a photo location is added as a waypoint and routing is enabled,
+  its coordinates are sent to Apple as part of the routing request. Map display
+  also uses Apple MapKit. When offline HTML export is added, it must not expose
+  GPS/EXIF coordinates unintentionally.
 - Opt into automatic routing to calculate the street route in the current
   order after waypoint changes. For a selected trip, the "Reihenfolge
   optimieren" symbol remains visible next to the automatic-routing control;
@@ -158,7 +212,8 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   multiple road options for the same connection. Selecting a stage limits the
   overlay to connections inside it. Waypoint or overnight-boundary changes
   clear the comparison; available results are kept if optimization fails.
-- Routing reuses directed legs between unchanged waypoints in memory while the
+- Routing reuses directed legs between unchanged waypoints and the same
+  departure date in memory while the
   planner is open. Inserting a waypoint into a fixed route needs only the two
   new adjoining legs if the remaining legs are cached. A separate optimization
   may require additional connections. Without overnight anchors, a fresh
@@ -174,10 +229,23 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   lookup, click again to retry. Local trips can still be opened and edited
   offline; new place searches and road routes require a connection. A road
   preview already calculated for the current route remains visible if
-  fetching alternative legs fails.
+  fetching alternative legs fails. When MapKit finds no driving route for a
+  current connection, both endpoint names are shown. MapKit does not identify
+  which point or cause is responsible: check access to both locations and
+  consider a nearby parking place and walking the remaining distance. Click
+  the concise failure message for a local diagnostic popover with affected
+  connections, coordinates, available error domains, codes and underlying
+  errors. A missing MapKit explanation is explicitly identified; network errors
+  and the app's timeout are distinguished when possible. Available current connections
+  remain visible individually on the map even when other connections fail;
+  no complete trip total is shown for an incomplete route. For an unavailable
+  connection, search on demand for parking near either endpoint: the app checks
+  up to five nearby candidates within 2 km against the adjacent driving legs
+  if used as a replacement. Results can be located on the map, but do not
+  change the original waypoint; walking routes and access are not verified.
 - The documentation-based external provider comparison and its deferred
-  live tests are recorded in [plan.md](plan.md). Photos and offline HTML
-  export are not implemented yet.
+  live tests are recorded in [plan.md](plan.md). Photo management is available;
+  offline HTML export is not implemented yet.
 
 ## Plan and follow stages
 

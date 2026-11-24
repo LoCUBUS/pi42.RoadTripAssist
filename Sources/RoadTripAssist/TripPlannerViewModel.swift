@@ -19,11 +19,19 @@ final class TripPlannerViewModel: ObservableObject {
     @Published private(set) var stops: [RoadStop] = []
     @Published private(set) var manualOrder = false
     @Published private(set) var destination: RoadStop?
+    @Published private(set) var departureDate: Date?
     @Published private(set) var details: [RoadStop.ID: WaypointDetails] = [:]
     @Published private(set) var defaultStageBudgetMinutes: Int?
     @Published private(set) var roadPreview: PlannedRoute?
     @Published private(set) var suggestion: PlannedRoute?
     @Published private(set) var optimizationConnections: [RouteConnection] = []
+    @Published private(set) var currentConnections: [RouteConnection] = []
+    @Published private(set) var unavailableConnections: [UnavailableRouteConnection] = []
+    @Published private(set) var currentRequestErrors: [String] = []
+    @Published private(set) var parkingSearchWaypoint: RoadStop?
+    @Published private(set) var parkingSuggestions: [RoadStop] = []
+    @Published private(set) var isSearchingParking = false
+    @Published private(set) var parkingSearchError: String?
     @Published private(set) var isProvisional = true
     @Published private(set) var automaticRouting = false
     @Published private(set) var completedRequests = 0
@@ -32,12 +40,15 @@ final class TripPlannerViewModel: ObservableObject {
     @Published private(set) var routeStatus: RouteCalculationStatus = .idle
     @Published private(set) var errorMessage: String?
     @Published private(set) var routingError: String?
+    @Published private(set) var routingDiagnostic: String?
 
     private let routeService: MapKitRouteService
     private let findPlaces: @MainActor (String) async throws -> [RoadStop]
     private var routingTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    private var parkingSearchTask: Task<Void, Never>?
     private var lastRoutingWasOptimization = false
+    private var currentRequestFailures: [RouteRequestFailure] = []
     var onWaypointsChanged: ((TripWaypoints) -> Void)?
 
     init(routeService: MapKitRouteService? = nil,
@@ -50,6 +61,7 @@ final class TripPlannerViewModel: ObservableObject {
     deinit {
         routingTask?.cancel()
         searchTask?.cancel()
+        parkingSearchTask?.cancel()
     }
 
     var orderedWaypoints: [RoadStop] {
@@ -231,7 +243,7 @@ final class TripPlannerViewModel: ObservableObject {
         }
     }
 
-    func loadWaypoints(_ waypoints: TripWaypoints) {
+    func loadWaypoints(_ waypoints: TripWaypoints, departureDate: Date? = nil) {
         pauseRouting()
         cancelSearch()
         start = waypoints.start
@@ -240,6 +252,14 @@ final class TripPlannerViewModel: ObservableObject {
         manualOrder = waypoints.manualOrder
         details = waypoints.details
         defaultStageBudgetMinutes = waypoints.defaultStageBudgetMinutes
+        self.departureDate = departureDate
+        clearRoute()
+        scheduleRouting()
+    }
+
+    func setDepartureDate(_ date: Date?) {
+        guard departureDate != date else { return }
+        departureDate = date
         clearRoute()
         scheduleRouting()
     }
@@ -273,6 +293,44 @@ final class TripPlannerViewModel: ObservableObject {
 
     func nearbyPOIs(in area: MapPOISearchArea) async throws -> [MapPointOfInterest] {
         try await routeService.nearbyPOIs(in: area)
+    }
+
+    func searchParking(near waypoint: RoadStop) {
+        let waypoints = orderedWaypoints
+        guard unavailableConnections.contains(where: { $0.from == waypoint || $0.to == waypoint }),
+              let index = waypoints.firstIndex(of: waypoint) else { return }
+        cancelParkingSearch()
+        parkingSearchWaypoint = waypoint
+        isSearchingParking = true
+        let previous = index > 0 ? waypoints[index - 1] : nil
+        let next = index + 1 < waypoints.count ? waypoints[index + 1] : nil
+        let service = routeService
+        let departureDate = self.departureDate
+        parkingSearchTask = Task { [weak self] in
+            do {
+                let suggestions = try await service.accessibleParking(near: waypoint, previous: previous, next: next,
+                                                                       departureDate: departureDate)
+                try Task.checkCancellation()
+                self?.parkingSuggestions = suggestions
+            } catch {
+                if !Task.isCancelled {
+                    self?.parkingSearchError = Self.serviceErrorMessage(error)
+                }
+            }
+            if !Task.isCancelled {
+                self?.isSearchingParking = false
+                self?.parkingSearchTask = nil
+            }
+        }
+    }
+
+    private func cancelParkingSearch() {
+        parkingSearchTask?.cancel()
+        parkingSearchTask = nil
+        parkingSearchWaypoint = nil
+        parkingSuggestions = []
+        isSearchingParking = false
+        parkingSearchError = nil
     }
 
     func setDestination(_ stop: RoadStop) {
@@ -373,6 +431,11 @@ final class TripPlannerViewModel: ObservableObject {
         roadPreview = nil
         suggestion = nil
         optimizationConnections = []
+        currentConnections = []
+        unavailableConnections = []
+        currentRequestErrors = []
+        currentRequestFailures = []
+        cancelParkingSearch()
         isProvisional = true
     }
 
@@ -385,9 +448,13 @@ final class TripPlannerViewModel: ObservableObject {
     private func scheduleRouting(optimize: Bool = false) {
         let previous = routingTask
         previous?.cancel()
+        cancelParkingSearch()
         completedRequests = 0
         totalRequests = 0
         routingError = nil
+        routingDiagnostic = nil
+        currentRequestErrors = []
+        currentRequestFailures = []
         guard automaticRouting, let start, let destination else {
             routeStatus = .idle
             return
@@ -395,6 +462,7 @@ final class TripPlannerViewModel: ObservableObject {
         lastRoutingWasOptimization = optimize
         let stops = self.stops
         let anchors = self.anchors
+        let departureDate = self.departureDate
         let service = routeService
         routeStatus = .preparing
         routingTask = Task { [weak self] in
@@ -409,7 +477,14 @@ final class TripPlannerViewModel: ObservableObject {
                 try Task.checkCancellation()
                 let route = try await service.planRoute(
                     start: start, stops: stops, destination: destination, anchors: anchors, optimize: optimize,
+                    departureDate: departureDate,
                     onPreview: { [weak self] route in self?.roadPreview = route },
+                    onCurrentConnections: { [weak self] current, unavailable, failures in
+                        self?.currentConnections = current
+                        self?.unavailableConnections = unavailable
+                        self?.currentRequestErrors = failures.map { Self.serviceErrorMessage($0.error) }
+                        self?.currentRequestFailures = failures
+                    },
                     onConnections: { [weak self] connections in self?.optimizationConnections = connections },
                     onProgress: { [weak self] done, total in
                         self?.completedRequests = done
@@ -429,13 +504,85 @@ final class TripPlannerViewModel: ObservableObject {
             } catch {
                 if !Task.isCancelled {
                     self?.routingError = Self.serviceErrorMessage(error)
+                    if let self {
+                        self.routingDiagnostic = self.makeRoutingDiagnostic(error)
+                    }
                     self?.routeStatus = .failed
                 }
             }
         }
     }
 
+    private func makeRoutingDiagnostic(_ error: Error) -> String {
+        var sections = [
+            "Berechnung: \(lastRoutingWasOptimization ? "Optimierung" : "aktuelle Reihenfolge")",
+            "Reisestart: \(departureDate.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "nicht festgelegt")",
+            "Ergebnis: \(Self.serviceErrorMessage(error))",
+            "MapKit-Anfragen: \(completedRequests) von \(totalRequests) abgeschlossen.",
+            "Erfolgreiche Abschnitte: \(currentConnections.count); ohne Autoroute: \(unavailableConnections.count); Anfragefehler: \(currentRequestFailures.count)."
+        ]
+        for connection in unavailableConnections {
+            var detail = "Keine Autoroute: \(Self.locationDescription(connection.from)) → \(Self.locationDescription(connection.to))"
+            if let error = connection.underlyingError {
+                detail += "\n\(Self.technicalErrorDescription(error))"
+            } else {
+                detail += "\nMapKit lieferte keine Route und keine weitere Fehlerursache."
+            }
+            sections.append(detail)
+        }
+        for failure in currentRequestFailures {
+            sections.append(
+                "Anfragefehler: \(Self.locationDescription(failure.from)) → \(Self.locationDescription(failure.to))\n"
+                + Self.technicalErrorDescription(failure.error)
+            )
+        }
+        if currentRequestFailures.isEmpty {
+            if case MapKitRouteError.missingRoute = error {
+                if unavailableConnections.isEmpty {
+                    sections.append("Für die fehlende Route liegen keine weiteren technischen Details vor.")
+                }
+            } else {
+                sections.append(Self.technicalErrorDescription(error))
+            }
+        }
+        sections.append("Ein fehlender Abschnitt belegt nicht, dass einer der Punkte nicht anfahrbar ist. MapKit liefert möglicherweise keinen genaueren Grund.")
+        return sections.joined(separator: "\n\n")
+    }
+
+    private static func locationDescription(_ stop: RoadStop) -> String {
+        let latitude = stop.coordinate.latitude.formatted(.number.precision(.fractionLength(6)))
+        let longitude = stop.coordinate.longitude.formatted(.number.precision(.fractionLength(6)))
+        return "„\(stop.name)“ (\(latitude), \(longitude))"
+    }
+
+    private static func technicalErrorDescription(_ error: Error) -> String {
+        if case let MapKitRouteError.requestFailed(_, _, underlying) = error {
+            return technicalErrorDescription(underlying)
+        }
+        if case MapKitRouteError.timeout = error {
+            return "App-seitiges Zeitlimit von 12 Sekunden: \(error.localizedDescription)"
+        }
+        var details: [String] = []
+        var current: NSError? = error as NSError
+        var visited = Set<ObjectIdentifier>()
+        while let item = current, details.count < 8, visited.insert(ObjectIdentifier(item)).inserted {
+            var description = "Domain: \(item.domain), Code: \(item.code)\nBeschreibung: \(item.localizedDescription)"
+            if let reason = item.localizedFailureReason, !reason.isEmpty {
+                description += "\nGrund: \(reason)"
+            }
+            if let suggestion = item.localizedRecoverySuggestion, !suggestion.isEmpty {
+                description += "\nHinweis: \(suggestion)"
+            }
+            details.append(description)
+            current = item.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return details.joined(separator: "\nVerursacht durch:\n")
+    }
+
     private static func serviceErrorMessage(_ error: Error) -> String {
+        if case let MapKitRouteError.requestFailed(from, to, underlying) = error {
+            return "Fehler bei der Verbindung „\(from)“ → „\(to)“: \(serviceErrorMessage(underlying))"
+        }
         let nsError = error as NSError
         let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
         if nsError.domain == NSURLErrorDomain || underlying?.domain == NSURLErrorDomain {

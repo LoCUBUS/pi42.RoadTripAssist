@@ -1,4 +1,5 @@
 import AppKit
+import CoreLocation
 import MapKit
 import SwiftUI
 
@@ -17,6 +18,7 @@ struct TripPlannerView: View {
             fixturePOI = ProcessInfo.processInfo.arguments.contains("--ui-testing-poi") ? fixture.mapPOI : nil
             showMap = fixturePOI != nil || ProcessInfo.processInfo.arguments.contains("--ui-testing-budget-placeholder")
                 || ProcessInfo.processInfo.arguments.contains("--ui-testing-optimization")
+                || ProcessInfo.processInfo.arguments.contains("--ui-testing-photo")
             launchMaps = ProcessInfo.processInfo.arguments.contains("--ui-testing-open-maps")
                 ? openInAppleMaps : fixture.recordMapsHandoff
             return
@@ -52,6 +54,7 @@ struct TripPlannerView: View {
 
 private struct TripWorkspaceView: View {
     private static let overnightSearchRadius: CLLocationDistance = 2_500
+    private static let photoWaypointOverlapDistance: CLLocationDistance = 25
 
     @ObservedObject var library: TripLibrary
     @ObservedObject var model: TripPlannerViewModel
@@ -64,6 +67,7 @@ private struct TripWorkspaceView: View {
     @State private var selectedPOI: MapPointOfInterest?
     @State private var mapPOIMessage: String?
     @State private var showRoutingConfirmation = false
+    @State private var showRoutingDiagnostics = false
     @State private var showMapsError = false
     @State private var editor: TripEditorDraft?
     @State private var tripToDelete: RoadTrip?
@@ -78,6 +82,8 @@ private struct TripWorkspaceView: View {
     @State private var pendingWaypointAction: WaypointEditorAction?
     @State private var showDiscardWaypointChanges = false
     @State private var showDefaultBudget = false
+    @State private var showPhotoLibrary = false
+    @State private var presentedMapPhotoID: TripPhoto.ID?
     @State private var overrunStage: TripStage?
     @State private var stageStopToRemove: RoadStop?
     @State private var showRouteInspector = true
@@ -138,6 +144,7 @@ private struct TripWorkspaceView: View {
             showSuggestionOnMap = false
             showAlternativeConnections = false
             selectedAlternativeConnection = nil
+            presentedMapPhotoID = nil
             showAlternativePopover = false
             showSuggestionPopover = false
             waypointEditor = nil
@@ -159,6 +166,9 @@ private struct TripWorkspaceView: View {
                 showSuggestionPopover = false
             }
         }
+        .onChange(of: model.routeStatus) { _, status in
+            if status != .failed { showRoutingDiagnostics = false }
+        }
         .onChange(of: availableAlternativeConnections.map(\.id)) { _, ids in
             if let selectedAlternativeConnection, !ids.contains(selectedAlternativeConnection) {
                 self.selectedAlternativeConnection = nil
@@ -169,8 +179,8 @@ private struct TripWorkspaceView: View {
             }
         }
         .sheet(item: $editor) { draft in
-            TripEditorView(draft: draft) { name, notes in
-                library.updateTrip(id: draft.tripID, name: name, notes: notes)
+            TripEditorView(draft: draft) { name, notes, departureDate in
+                library.updateTrip(id: draft.tripID, name: name, notes: notes, departureDate: departureDate)
                 editor = nil
             }
         }
@@ -178,6 +188,11 @@ private struct TripWorkspaceView: View {
             StageBudgetEditor(minutes: model.defaultStageBudgetMinutes) { minutes in
                 model.setDefaultStageBudget(minutes)
                 showDefaultBudget = false
+            }
+        }
+        .sheet(isPresented: $showPhotoLibrary) {
+            if let tripID = library.selectedID {
+                TripPhotoLibraryView(library: library, model: model, tripID: tripID)
             }
         }
         .alert("Reise löschen?", isPresented: Binding(
@@ -210,7 +225,7 @@ private struct TripWorkspaceView: View {
                 model.enableAutomaticRouting()
             }
         } message: {
-            Text("Nach Änderungen an den Wegpunkten berechnet MapKit automatisch die Straßenroute in der aktuellen Reihenfolge. Eine Optimierung weiterer Reihenfolgen startest du separat. Dabei werden Koordinaten an Apple gesendet. Du kannst die Berechnung jederzeit pausieren.")
+            Text("Nach Änderungen an den Wegpunkten berechnet MapKit automatisch die Straßenroute in der aktuellen Reihenfolge. Eine Optimierung weiterer Reihenfolgen startest du separat. Dabei werden Koordinaten und ein gegebenenfalls festgelegter Reisestart an Apple gesendet. Du kannst die Berechnung jederzeit pausieren.")
         }
         .alert("Apple Karten konnte nicht geöffnet werden", isPresented: $showMapsError) {
             Button("OK", role: .cancel) {}
@@ -287,6 +302,12 @@ private struct TripWorkspaceView: View {
             }
 
             if let trip = library.selectedTrip {
+                if let departureDate = trip.departureDate {
+                    Label("Start: \(departureDate.formatted(date: .abbreviated, time: .shortened))",
+                          systemImage: "calendar")
+                        .font(.caption)
+                        .accessibilityIdentifier("trip-departure-date")
+                }
                 if !trip.notes.isEmpty {
                     Text(trip.notes)
                         .font(.caption)
@@ -297,11 +318,24 @@ private struct TripWorkspaceView: View {
                     Button("Bearbeiten") { editor = TripEditorDraft(trip: trip) }
                     Button("Löschen", role: .destructive) { tripToDelete = trip }
                 }
+                Button("Fotos verwalten", systemImage: "photo.on.rectangle") {
+                    showPhotoLibrary = true
+                }
+                .accessibilityIdentifier("manage-trip-photos")
             }
             if let error = library.saveError {
                 Text("Änderungen sind noch nicht gespeichert: \(error)")
                     .foregroundStyle(.red)
                 Button("Erneut speichern", action: library.save)
+            }
+            if let error = library.selectedTripSaveError {
+                Text("Die letzte ausgewählte Route konnte nicht gespeichert werden: \(error)")
+                    .foregroundStyle(.red)
+                Button("Erneut versuchen", action: library.retrySelectedTripSave)
+            }
+            if let error = library.mediaCleanupError {
+                Text("Lokale Fotos konnten nach dem Löschen der Reise nicht entfernt werden: \(error)")
+                    .foregroundStyle(.red)
             }
             if library.trips.isEmpty { Spacer() }
         }
@@ -310,6 +344,10 @@ private struct TripWorkspaceView: View {
 
     private var mapView: some View {
         let stage = mapStage
+        let waypoints = stage?.waypoints ?? model.orderedWaypoints
+        let trip = library.selectedTrip
+        let photosByWaypoint = overlappingPhotosByWaypoint(waypoints: waypoints, photos: trip?.photos ?? [])
+        let clusteredPhotoIDs = Set(photosByWaypoint.values.flatMap { $0.map(\.id) })
         let visibleStages = showStages && !showSuggestionOnMap ? (stage.map { [$0] } ?? model.stages) : []
         return MapReader { proxy in
             Map(position: $cameraPosition) {
@@ -319,6 +357,17 @@ private struct TripWorkspaceView: View {
                 if coordinates.count >= 2 {
                     MapPolyline(coordinates: coordinates)
                         .stroke(.blue, lineWidth: 4)
+                }
+                if model.roadPreview == nil && !showSuggestionOnMap {
+                    let visibleIDs = Set(waypoints.map(\.id))
+                    ForEach(model.currentConnections.filter {
+                        visibleIDs.contains($0.from.id) && visibleIDs.contains($0.to.id)
+                    }) { connection in
+                        if connection.leg.coordinates.count >= 2 {
+                            MapPolyline(coordinates: connection.leg.coordinates)
+                                .stroke(.blue, lineWidth: 4)
+                        }
+                    }
                 }
                 if showAlternativeConnections {
                     ForEach(availableAlternativeConnections.filter {
@@ -339,13 +388,57 @@ private struct TripWorkspaceView: View {
                             .tint(.orange)
                     }
                 }
-                ForEach(stage?.waypoints ?? model.orderedWaypoints) { stop in
+                ForEach(waypoints) { stop in
                     let appearance = waypointAppearance(for: stop)
                     Marker(stop.name, systemImage: appearance.systemImage, coordinate: stop.coordinate)
                         .tint(appearance.color)
+                    if let trip, let photos = photosByWaypoint[stop.id], !photos.isEmpty {
+                        Annotation(stop.name, coordinate: stop.coordinate, anchor: .center) {
+                            WaypointPhotoOverlapAnnotation(
+                                waypoint: stop,
+                                photos: photos,
+                                library: library,
+                                model: model,
+                                tripID: trip.id,
+                                presentedPhotoID: $presentedMapPhotoID
+                            )
+                        }
+                    }
+                }
+                if let trip {
+                    ForEach(trip.photos) { photo in
+                        if let coordinate = photo.coordinate, !clusteredPhotoIDs.contains(photo.id) {
+                            Annotation(photo.caption.isEmpty ? photo.originalName : photo.caption,
+                                       coordinate: coordinate.coordinate, anchor: .bottom) {
+                                Button {
+                                    presentedMapPhotoID = photo.id
+                                } label: {
+                                    TripPhotoThumbnail(url: library.photoURL(for: photo, tripID: trip.id),
+                                                       rotationQuarterTurns: photo.rotationQuarterTurns)
+                                        .frame(width: 42, height: 42)
+                                        .clipShape(Circle())
+                                        .overlay { Circle().stroke(.white, lineWidth: 2) }
+                                        .shadow(radius: 2)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Foto auf der Karte: \(photo.caption.isEmpty ? photo.originalName : photo.caption)")
+                                .accessibilityIdentifier("planner-photo-marker-\(photo.id.uuidString)")
+                                .popover(isPresented: photoPopoverBinding(for: photo.id), arrowEdge: .trailing) {
+                                    TripPhotoDetailPopover(library: library, model: model,
+                                                           tripID: trip.id, photoID: photo.id) {
+                                        presentedMapPhotoID = nil
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 ForEach(model.searchResults.prefix(5)) { result in
                     Marker(result.name, coordinate: result.coordinate)
+                        .tint(.orange)
+                }
+                ForEach(model.parkingSuggestions) { parking in
+                    Marker(parking.name, systemImage: "parkingsign.circle", coordinate: parking.coordinate)
                         .tint(.orange)
                 }
                 if let selectedPOI, !model.hasMapPlace(selectedPOI.stop) {
@@ -911,6 +1004,7 @@ private struct TripWorkspaceView: View {
         let appearance = waypointAppearance(for: stop)
         return HStack {
             Button {
+                focusWaypoint(on: stop)
                 toggleWaypointDetails(stop)
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
@@ -976,6 +1070,30 @@ private struct TripWorkspaceView: View {
     private func waypointAppearance(for stop: RoadStop) -> WaypointAppearance {
         WaypointAppearance(details: model.waypointDetails(for: stop),
                            isStart: stop == model.start, isDestination: stop == model.destination)
+    }
+
+    private func overlappingPhotosByWaypoint(waypoints: [RoadStop],
+                                             photos: [TripPhoto]) -> [RoadStop.ID: [TripPhoto]] {
+        var groupedPhotos: [RoadStop.ID: [TripPhoto]] = [:]
+        for photo in photos {
+            guard let coordinate = photo.coordinate else { continue }
+            let photoLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            guard let nearestWaypoint = waypoints.min(by: {
+                CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
+                    .distance(from: photoLocation)
+                    < CLLocation(latitude: $1.coordinate.latitude, longitude: $1.coordinate.longitude)
+                    .distance(from: photoLocation)
+            }) else {
+                continue
+            }
+            let waypointLocation = CLLocation(latitude: nearestWaypoint.coordinate.latitude,
+                                              longitude: nearestWaypoint.coordinate.longitude)
+            guard waypointLocation.distance(from: photoLocation) <= Self.photoWaypointOverlapDistance else {
+                continue
+            }
+            groupedPhotos[nearestWaypoint.id, default: []].append(photo)
+        }
+        return groupedPhotos
     }
 
     private func toggleWaypointDetails(_ stop: RoadStop) {
@@ -1055,14 +1173,88 @@ private struct TripWorkspaceView: View {
         case .paused:
             Label("Berechnung pausiert", systemImage: "pause.circle")
         case .failed:
-            Text(model.roadPreview == nil
-                 ? "Straßenroute nicht verfügbar. Berechnung fehlgeschlagen."
-                 : "Straßenroute verfügbar. Optimierung nicht abgeschlossen.")
-                .fontWeight(.semibold)
-            if let error = model.routingError {
-                Text(error).foregroundStyle(.red)
+            Button {
+                showRoutingDiagnostics = true
+            } label: {
+                HStack {
+                    Label(model.roadPreview == nil
+                          ? (model.currentConnections.isEmpty
+                             ? "Routenberechnung fehlgeschlagen."
+                             : "Teilroute verfügbar; Verbindungen fehlen.")
+                          : "Optimierung nicht abgeschlossen.",
+                          systemImage: "exclamationmark.triangle")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.red)
+                    Image(systemName: "info.circle")
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Fehlerdiagnose anzeigen")
+            .accessibilityIdentifier("routing-diagnostics")
+            .popover(isPresented: $showRoutingDiagnostics, arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Routenfehler – Diagnose").font(.headline)
+                    Text("Die Angaben bleiben lokal und können Standortdaten enthalten.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(model.routingDiagnostic ?? "Keine Diagnose verfügbar.")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("routing-diagnostics-details")
+                    }
+                    Button("Schließen") { showRoutingDiagnostics = false }
+                }
+                .padding()
+                .frame(width: 520, height: 420)
+            }
+            ForEach(model.unavailableConnections) { connection in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ohne Autoroute:").foregroundStyle(.red)
+                    Button("Von: \(connection.from.name)") { focusWaypoint(on: connection.from) }
+                    Button("Nach: \(connection.to.name)") { focusWaypoint(on: connection.to) }
+                }
             }
             Button("Erneut versuchen", action: model.retryRouting)
+            if !model.unavailableConnections.isEmpty {
+                parkingSuggestions
+            }
+        }
+    }
+
+    private var parkingSuggestions: some View {
+        let affectedIDs = Set(model.unavailableConnections.flatMap { [$0.from.id, $0.to.id] })
+        let affectedWaypoints = model.orderedWaypoints.filter { affectedIDs.contains($0.id) }
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Parkplatz in der Nähe suchen").fontWeight(.semibold)
+            Text("Die nächsten fünf Treffer im Umkreis von 2 km werden als Ersatz für den gewählten Punkt auf ihre Straßenanbindung geprüft. Der ursprüngliche Wegpunkt bleibt unverändert.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(affectedWaypoints) { waypoint in
+                Button("Parkplätze bei „\(waypoint.name)“ prüfen") {
+                    model.searchParking(near: waypoint)
+                }
+                .disabled(model.isSearchingParking)
+            }
+            if let waypoint = model.parkingSearchWaypoint {
+                if model.isSearchingParking {
+                    ProgressView("Parkplätze bei „\(waypoint.name)“ werden geprüft …")
+                } else if let error = model.parkingSearchError {
+                    Text("Parkplatzsuche fehlgeschlagen: \(error)").foregroundStyle(.red)
+                } else if model.parkingSuggestions.isEmpty {
+                    Text("Unter den geprüften Treffern wurde kein passend angebundener Parkplatz gefunden.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Als Ersatz für „\(waypoint.name)“ geprüft; Entfernung ist Luftlinie, kein geprüfter Fußweg.")
+                        .font(.caption)
+                    ForEach(model.parkingSuggestions) { parking in
+                        Button("\(parking.name) · \(formatDistance(parking.distance(to: waypoint)))") {
+                            focusWaypoint(on: parking)
+                        }
+                        .help("Parkplatz auf der Karte anzeigen")
+                    }
+                }
+            }
         }
     }
 
@@ -1078,15 +1270,32 @@ private struct TripWorkspaceView: View {
         VStack(alignment: .leading, spacing: 6) {
             let stop = model.waypoint(in: field)
             let appearance = stop.map { waypointAppearance(for: $0) }
-            Label {
+            let heading = Label {
                 Text(title)
             } icon: {
                 Image(systemName: appearance?.systemImage ?? icon)
                     .foregroundStyle(appearance?.color ?? .secondary)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .accessibilityHidden(true)
+            if let stop {
+                Button {
+                    focusWaypoint(on: stop)
+                } label: {
+                    heading
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("\(title) auf der Karte zeigen")
+                .accessibilityLabel("\(title) auf der Karte zeigen")
+                .accessibilityIdentifier("focus-waypoint-\(id)")
+            } else {
+                heading
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
             HStack {
                 TextField("Ort oder POI suchen", text: Binding(
                     get: { model.fieldText(field) },
@@ -1219,6 +1428,22 @@ private struct TripWorkspaceView: View {
         )
     }
 
+    private func focusWaypoint(on stop: RoadStop) {
+        cameraPosition = .region(waypointFocusRegion(for: stop))
+    }
+
+    private func photoPopoverBinding(for photoID: TripPhoto.ID) -> Binding<Bool> {
+        Binding {
+            presentedMapPhotoID == photoID
+        } set: { isPresented in
+            if isPresented {
+                presentedMapPhotoID = photoID
+            } else if presentedMapPhotoID == photoID {
+                presentedMapPhotoID = nil
+            }
+        }
+    }
+
     private func mapsButton(for stop: RoadStop, id: String) -> some View {
         Button("In Apple Karten öffnen", systemImage: "map") {
             openInMaps(stop)
@@ -1250,12 +1475,120 @@ private struct TripWorkspaceView: View {
     }
 }
 
+private struct WaypointPhotoOverlapAnnotation: View {
+    let waypoint: RoadStop
+    let photos: [TripPhoto]
+    @ObservedObject var library: TripLibrary
+    @ObservedObject var model: TripPlannerViewModel
+    let tripID: RoadTrip.ID
+    @Binding var presentedPhotoID: TripPhoto.ID?
+
+    @State private var separation: CGFloat = 0
+
+    private let itemSize: CGFloat = 42
+    private let itemSpacing: CGFloat = 8
+    private let maximumSeparation: CGFloat = 60
+
+    var body: some View {
+        GeometryReader { geometry in
+            let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            ZStack {
+                ForEach(photos.indices, id: \.self) { index in
+                    let horizontalOffset = photoHorizontalOffset(at: index)
+                    connector(in: geometry, to: CGPoint(
+                        x: center.x + horizontalOffset + separation,
+                        y: center.y - itemSize / 2
+                    ))
+                }
+
+                HStack(spacing: itemSpacing) {
+                    ForEach(photos) { photo in
+                        photoButton(photo)
+                    }
+                }
+                .offset(x: separation, y: -itemSize / 2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: CGFloat(photos.count) * itemSize
+               + CGFloat(max(0, photos.count - 1)) * itemSpacing + 2 * maximumSeparation,
+               height: 140)
+        .contentShape(Rectangle())
+        .onHover { isHovered in
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.76)) {
+                separation = isHovered ? maximumSeparation : 0
+            }
+        }
+        .accessibilityIdentifier("planner-waypoint-photo-overlap-\(waypoint.id.uuidString)")
+    }
+
+    private func photoButton(_ photo: TripPhoto) -> some View {
+        Button {
+            presentedPhotoID = photo.id
+        } label: {
+            TripPhotoThumbnail(url: library.photoURL(for: photo, tripID: tripID),
+                               rotationQuarterTurns: photo.rotationQuarterTurns)
+                .frame(width: itemSize, height: itemSize)
+                .clipShape(Circle())
+                .overlay { Circle().stroke(.white, lineWidth: 2) }
+                .shadow(radius: 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Foto auf der Karte: \(photo.caption.isEmpty ? photo.originalName : photo.caption)")
+        .accessibilityIdentifier("planner-photo-marker-\(photo.id.uuidString)")
+        .popover(isPresented: photoPopoverBinding(for: photo.id), arrowEdge: .trailing) {
+            TripPhotoDetailPopover(library: library, model: model,
+                                   tripID: tripID, photoID: photo.id) {
+                presentedPhotoID = nil
+            }
+        }
+    }
+
+    private func photoPopoverBinding(for photoID: TripPhoto.ID) -> Binding<Bool> {
+        Binding {
+            presentedPhotoID == photoID
+        } set: { isPresented in
+            if isPresented {
+                presentedPhotoID = photoID
+            } else if presentedPhotoID == photoID {
+                presentedPhotoID = nil
+            }
+        }
+    }
+
+    private func photoHorizontalOffset(at index: Int) -> CGFloat {
+        (CGFloat(index) - CGFloat(photos.count - 1) / 2) * (itemSize + itemSpacing)
+    }
+
+    private func connector(in geometry: GeometryProxy, to endpoint: CGPoint) -> some View {
+        Path { path in
+            path.move(to: CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2))
+            path.addLine(to: endpoint)
+        }
+        .stroke(.white, lineWidth: 2)
+        .shadow(color: .black.opacity(0.75), radius: 2)
+        .opacity(separation == 0 ? 0 : 1)
+        .allowsHitTesting(false)
+        .animation(.spring(response: 0.28, dampingFraction: 0.76), value: separation)
+    }
+}
+
+func waypointFocusRegion(for stop: RoadStop) -> MKCoordinateRegion {
+    MKCoordinateRegion(center: stop.coordinate, latitudinalMeters: 20_000, longitudinalMeters: 20_000)
+}
+
 struct WaypointAppearance {
     let systemImage: String
     let color: Color
 
     init(details: WaypointDetails, isStart: Bool, isDestination: Bool) {
-        color = details.overnight ? .blue : details.category == nil ? .red : .green
+        if details.overnight {
+            color = .blue
+        } else if details.category == .photo {
+            color = details.stayMinutes > 0 ? .green : .purple
+        } else {
+            color = details.category == nil ? .red : .green
+        }
         if details.overnight {
             systemImage = details.systemImage
         } else if isStart {
@@ -1506,11 +1839,15 @@ private struct TripEditorDraft: Identifiable {
     let tripID: RoadTrip.ID?
     var name: String
     var notes: String
+    var hasDepartureDate: Bool
+    var departureDate: Date
 
     init(trip: RoadTrip? = nil) {
         tripID = trip?.id
         name = trip?.name ?? ""
         notes = trip?.notes ?? ""
+        hasDepartureDate = trip?.departureDate != nil
+        departureDate = trip?.departureDate ?? Date()
     }
 }
 
@@ -1518,7 +1855,7 @@ private struct TripEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var nameIsFocused: Bool
     @State var draft: TripEditorDraft
-    let onSave: (String, String) -> Void
+    let onSave: (String, String, Date?) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1532,11 +1869,24 @@ private struct TripEditorView: View {
                 .accessibilityLabel("Beschreibung")
                 .frame(minHeight: 100)
 
+            Toggle("Reisestart festlegen", isOn: $draft.hasDepartureDate)
+                .accessibilityIdentifier("trip-has-departure-date")
+            if draft.hasDepartureDate {
+                DatePicker("Startdatum und -zeit", selection: $draft.departureDate,
+                           displayedComponents: [.date, .hourAndMinute])
+                    .accessibilityIdentifier("trip-departure-date-picker")
+                Text("MapKit erhält diesen Zeitpunkt für alle Teilstrecken. Spätere Etappen und Aufenthalte werden zeitlich nicht berücksichtigt.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             HStack {
                 Spacer()
                 Button("Abbrechen") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Speichern") { onSave(draft.name, draft.notes) }
+                Button("Speichern") {
+                    onSave(draft.name, draft.notes, draft.hasDepartureDate ? draft.departureDate : nil)
+                }
                     .keyboardShortcut(.defaultAction)
                     .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

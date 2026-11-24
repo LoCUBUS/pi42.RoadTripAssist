@@ -1,5 +1,7 @@
 import CoreLocation
+import ImageIO
 import SwiftUI
+import UniformTypeIdentifiers
 import XCTest
 @testable import RoadTripAssist
 
@@ -25,6 +27,250 @@ final class TripLibraryTests: XCTestCase {
         let legacy = Data(#"{"stayMinutes":0,"notes":"","rating":0,"status":"pending","overnight":false}"#.utf8)
         let details = try JSONDecoder().decode(WaypointDetails.self, from: legacy)
         XCTAssertNil(details.category)
+    }
+
+    func testLegacyRoadTripDecodesWithoutPhotos() throws {
+        let encoded = try JSONEncoder().encode(RoadTrip(name: "Alt", notes: ""))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "photos")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(RoadTrip.self, from: legacy)
+        XCTAssertTrue(decoded.photos.isEmpty)
+        XCTAssertNil(decoded.departureDate)
+    }
+
+    func testLegacyPhotoDecodesWithoutRotation() throws {
+        let data = Data(#"{"id":"00000000-0000-0000-0000-000000000001","fileExtension":"jpg","originalName":"photo.jpg"}"#.utf8)
+
+        let photo = try JSONDecoder().decode(TripPhoto.self, from: data)
+
+        XCTAssertEqual(photo.rotationQuarterTurns, 0)
+        XCTAssertEqual(photo.caption, "")
+    }
+
+    func testPhotoMetadataReadsEXIFDateAndGPSCoordinates() throws {
+        let metadata = try PhotoMetadata.read(from: makeImageData())
+
+        var dateComponents = DateComponents()
+        dateComponents.calendar = Calendar(identifier: .gregorian)
+        dateComponents.timeZone = TimeZone(secondsFromGMT: 7_200)
+        dateComponents.year = 2026
+        dateComponents.month = 7
+        dateComponents.day = 18
+        dateComponents.hour = 19
+        dateComponents.minute = 25
+        dateComponents.second = 30
+        XCTAssertEqual(metadata.capturedAt, dateComponents.date)
+        XCTAssertEqual(metadata.coordinate?.latitude, -47.25)
+        XCTAssertEqual(metadata.coordinate?.longitude, 11.5)
+    }
+
+    func testPhotoAssignmentSuggestionChoosesWaypointRouteAndStage() {
+        let start = stop("Start", latitude: 0, longitude: 0)
+        let destination = stop("Ziel", latitude: 0, longitude: 0.1)
+        let leg = RouteLeg(duration: 100, distance: 11_000, coordinates: [start.coordinate, destination.coordinate])
+        let stage = TripStage(waypoints: [start, destination], legs: [leg], waypointStayMinutes: [0, 0],
+                              budgetMinutes: nil, endsWithOvernight: false)
+
+        XCTAssertEqual(
+            PhotoAssignmentSuggester.suggest(
+                at: CLLocationCoordinate2D(latitude: 0, longitude: 0.001), waypoints: [start, destination],
+                stages: [stage], routeLegs: [leg]
+            ),
+            .waypoint(start.id)
+        )
+        XCTAssertEqual(
+            PhotoAssignmentSuggester.suggest(
+                at: CLLocationCoordinate2D(latitude: 0.005, longitude: 0.05), waypoints: [start, destination],
+                stages: [stage], routeLegs: [leg]
+            ),
+            .routeSegment(from: start.id, to: destination.id)
+        )
+        XCTAssertEqual(
+            PhotoAssignmentSuggester.suggest(
+                at: CLLocationCoordinate2D(latitude: 0.05, longitude: 0.1), waypoints: [start, destination],
+                stages: [stage], routeLegs: [leg]
+            ),
+            .stage(destination.id)
+        )
+        XCTAssertNil(PhotoAssignmentSuggester.suggest(
+            at: CLLocationCoordinate2D(latitude: 1, longitude: 1), waypoints: [start, destination],
+            stages: [stage], routeLegs: [leg]
+        ))
+    }
+
+    @MainActor
+    func testPhotoImportCopiesAssetAndPersistsConfirmedAssignment() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Fotoreise", notes: "")
+        let waypoint = stop("Aussicht", latitude: -47.25, longitude: 11.5)
+        library.planner.setStart(waypoint)
+        let imageData = try makeImageData()
+        let tripID = try XCTUnwrap(library.selectedID)
+
+        try await library.addPhoto(data: imageData, originalName: "original.jpg", tripID: tripID)
+        let trip = try XCTUnwrap(library.selectedTrip)
+        let photo = try XCTUnwrap(trip.photos.first)
+        XCTAssertEqual(try Data(contentsOf: library.photoURL(for: photo, tripID: trip.id)), imageData)
+        XCTAssertEqual(photo.assignment, PhotoAssignment(target: .waypoint(waypoint.id), status: .suggested))
+
+        try library.confirmPhotoSuggestion(photoID: photo.id, tripID: trip.id)
+        try library.updatePhotoCaption("Abendlicht", photoID: photo.id, tripID: trip.id)
+        let reopened = TripLibrary(store: store)
+        let reopenedPhoto = try XCTUnwrap(reopened.selectedTrip?.photos.first)
+        XCTAssertEqual(reopenedPhoto.caption, "Abendlicht")
+        XCTAssertEqual(reopenedPhoto.assignment?.status, .confirmed)
+        XCTAssertEqual(try reopened.photoURL(for: reopenedPhoto, tripID: trip.id).checkResourceIsReachable(), true)
+
+        try reopened.deletePhoto(reopenedPhoto.id, tripID: trip.id)
+        XCTAssertTrue(reopened.selectedTrip?.photos.isEmpty == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: reopened.photoURL(for: reopenedPhoto, tripID: trip.id).path))
+    }
+
+    @MainActor
+    func testPhotoLocationCanBeAddedAsWaypointAndAssigned() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = TripLibrary(store: TripStore(url: directory.appending(path: "trips.json")))
+        library.updateTrip(id: nil, name: "Fotoreise", notes: "")
+        let tripID = try XCTUnwrap(library.selectedID)
+        library.planner.setStart(stop("Start", latitude: 0, longitude: 0))
+        library.planner.setDestination(stop("Ziel", latitude: 1, longitude: 1))
+        try await library.addPhoto(data: makeImageData(), originalName: "Aussicht.jpg", tripID: tripID)
+        let photo = try XCTUnwrap(library.selectedTrip?.photos.first)
+
+        let waypoint = try library.addPhotoLocationAsWaypoint(photoID: photo.id, tripID: tripID)
+
+        XCTAssertEqual(waypoint.name, "Aussicht")
+        XCTAssertEqual(waypoint.coordinate.latitude, -47.25, accuracy: 0.0001)
+        XCTAssertEqual(waypoint.coordinate.longitude, 11.5, accuracy: 0.0001)
+        XCTAssertTrue(library.planner.orderedWaypoints.contains(waypoint))
+        XCTAssertEqual(library.planner.waypointDetails(for: waypoint).category, .photo)
+        XCTAssertEqual(library.selectedTrip?.photos.first?.assignment,
+                       PhotoAssignment(target: .waypoint(waypoint.id), status: .confirmed))
+    }
+
+    @MainActor
+    func testPhotoLocationReusesNearbyWaypointWithoutChangingItsDetails() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = TripLibrary(store: TripStore(url: directory.appending(path: "trips.json")))
+        library.updateTrip(id: nil, name: "Fotoreise", notes: "")
+        let tripID = try XCTUnwrap(library.selectedID)
+        let existing = stop("Vorhandener Ort", latitude: -47.25, longitude: 11.5)
+        library.planner.setStart(existing)
+        library.planner.setDestination(stop("Ziel", latitude: -47, longitude: 12))
+        library.planner.updateDetails(WaypointDetails(stayMinutes: 45, category: .viewpoint), for: existing)
+        try await library.addPhoto(data: makeImageData(), originalName: "Aussicht.jpg", tripID: tripID)
+        let photo = try XCTUnwrap(library.selectedTrip?.photos.first)
+
+        let waypoint = try library.addPhotoLocationAsWaypoint(photoID: photo.id, tripID: tripID)
+
+        XCTAssertEqual(waypoint.id, existing.id)
+        XCTAssertEqual(library.planner.orderedWaypoints.count, 2)
+        XCTAssertEqual(library.planner.waypointDetails(for: existing).category, .viewpoint)
+        XCTAssertEqual(library.planner.waypointDetails(for: existing).stayMinutes, 45)
+        XCTAssertEqual(library.selectedTrip?.photos.first?.assignment,
+                       PhotoAssignment(target: .waypoint(existing.id), status: .confirmed))
+    }
+
+    @MainActor
+    func testPhotoDeletionRestoresMediaAndMetadataWhenSavingFails() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Fotoreise", notes: "")
+        let tripID = try XCTUnwrap(library.selectedID)
+        let data = try makeImageData()
+        try await library.addPhoto(data: data, originalName: "photo.jpg", tripID: tripID)
+        let photo = try XCTUnwrap(library.selectedTrip?.photos.first)
+        let archive = directory.appending(path: "trips.backup")
+        try FileManager.default.moveItem(at: store.url, to: archive)
+        try FileManager.default.createDirectory(at: store.url, withIntermediateDirectories: false)
+
+        XCTAssertThrowsError(try library.deletePhoto(photo.id, tripID: tripID))
+        XCTAssertNotNil(library.saveError)
+        XCTAssertEqual(library.selectedTrip?.photos, [photo])
+        XCTAssertEqual(try Data(contentsOf: library.photoURL(for: photo, tripID: tripID)), data)
+
+        try FileManager.default.removeItem(at: store.url)
+        try FileManager.default.moveItem(at: archive, to: store.url)
+        try library.deletePhoto(photo.id, tripID: tripID)
+        XCTAssertTrue(library.selectedTrip?.photos.isEmpty == true)
+        XCTAssertTrue(try store.load().first?.photos.isEmpty == true)
+    }
+
+    @MainActor
+    func testFirstTripIsSelectedWhenNoPreviousSelectionExists() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let first = RoadTrip(name: "Erste Route", notes: "")
+        let second = RoadTrip(name: "Zweite Route", notes: "")
+        try store.save([first, second])
+
+        let library = TripLibrary(store: store)
+
+        XCTAssertEqual(library.selectedID, first.id)
+        XCTAssertEqual(try store.loadSelectedTripID(), first.id)
+        library.select(second.id)
+        try store.saveSelectedTripID(UUID())
+
+        let recovered = TripLibrary(store: store)
+
+        XCTAssertEqual(recovered.selectedID, first.id)
+        XCTAssertEqual(try store.loadSelectedTripID(), first.id)
+    }
+
+    @MainActor
+    func testSelectedTripSaveFailureCanBeRetried() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let library = TripLibrary(store: store)
+        try FileManager.default.createDirectory(at: store.selectedTripURL, withIntermediateDirectories: false)
+
+        library.updateTrip(id: nil, name: "Tour", notes: "")
+
+        let selectedID = try XCTUnwrap(library.selectedID)
+        XCTAssertNotNil(library.selectedTripSaveError)
+        XCTAssertEqual(library.selectedTrip?.name, "Tour")
+
+        try FileManager.default.removeItem(at: store.selectedTripURL)
+        library.retrySelectedTripSave()
+
+        XCTAssertNil(library.selectedTripSaveError)
+        XCTAssertEqual(try store.loadSelectedTripID(), selectedID)
+    }
+
+    @MainActor
+    func testPhotoRotationPersistsAndCanBeReversed() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Fotoreise", notes: "")
+        let tripID = try XCTUnwrap(library.selectedID)
+        let imageData = try makeImageData()
+        try await library.addPhoto(data: imageData, originalName: "photo.jpg", tripID: tripID)
+        let photo = try XCTUnwrap(library.selectedTrip?.photos.first)
+
+        try library.rotatePhoto(photoID: photo.id, tripID: tripID, clockwise: true)
+        try library.rotatePhoto(photoID: photo.id, tripID: tripID, clockwise: true)
+        let reopened = TripLibrary(store: store)
+        let reopenedPhoto = try XCTUnwrap(reopened.selectedTrip?.photos.first)
+        XCTAssertEqual(reopenedPhoto.rotationQuarterTurns, 2)
+        XCTAssertEqual(try Data(contentsOf: reopened.photoURL(for: reopenedPhoto, tripID: tripID)), imageData)
+
+        try reopened.rotatePhoto(photoID: photo.id, tripID: tripID, clockwise: false)
+        XCTAssertEqual(reopened.selectedTrip?.photos.first?.rotationQuarterTurns, 1)
+        try reopened.rotatePhoto(photoID: photo.id, tripID: tripID, clockwise: false)
+        XCTAssertEqual(reopened.selectedTrip?.photos.first?.rotationQuarterTurns, 0)
     }
 
     func testOvernightSymbolTakesPrecedenceWithoutDiscardingCategory() {
@@ -63,6 +309,14 @@ final class TripLibraryTests: XCTestCase {
         let destination = WaypointAppearance(details: classified, isStart: false, isDestination: true)
         XCTAssertEqual(destination.color, .green)
         XCTAssertEqual(destination.systemImage, "flag.checkered")
+
+        let photo = WaypointAppearance(details: WaypointDetails(category: .photo),
+                                       isStart: false, isDestination: false)
+        XCTAssertEqual(photo.color, .purple)
+        XCTAssertEqual(photo.systemImage, "photo.fill")
+        let photoWithStay = WaypointAppearance(details: WaypointDetails(stayMinutes: 1, category: .photo),
+                                               isStart: false, isDestination: false)
+        XCTAssertEqual(photoWithStay.color, .green)
     }
 
     @MainActor
@@ -97,6 +351,39 @@ final class TripLibraryTests: XCTestCase {
         XCTAssertEqual(model.stages.map(\.id), [finish.id])
         XCTAssertNil(try store.load().first?.waypoints.details[hotel.id])
     }
+    @MainActor
+    func testTripDepartureDatesPersistSwitchAndCanBeRemoved() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let firstDate = Date(timeIntervalSince1970: 2_000_000_000)
+        let secondDate = firstDate.addingTimeInterval(86_400)
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Erste", notes: "", departureDate: firstDate)
+        let firstID = try XCTUnwrap(library.selectedID)
+        XCTAssertEqual(library.planner.departureDate, firstDate)
+        library.updateTrip(id: nil, name: "Zweite", notes: "", departureDate: secondDate)
+        let secondID = try XCTUnwrap(library.selectedID)
+        XCTAssertEqual(library.planner.departureDate, secondDate)
+
+        library.updateTrip(id: firstID, name: "Umbenannt", notes: "")
+        XCTAssertEqual(library.planner.departureDate, secondDate)
+        XCTAssertEqual(library.trips.first { $0.id == firstID }?.departureDate, firstDate)
+        library.select(firstID)
+        XCTAssertEqual(library.planner.departureDate, firstDate)
+
+        let reopened = TripLibrary(store: store)
+        XCTAssertEqual(reopened.selectedID, firstID)
+        XCTAssertEqual(reopened.planner.departureDate, firstDate)
+        reopened.updateTrip(id: firstID, name: "Umbenannt", notes: "", departureDate: nil)
+        XCTAssertNil(reopened.planner.departureDate)
+        reopened.select(secondID)
+        XCTAssertEqual(reopened.planner.departureDate, secondDate)
+        let saved = try store.load()
+        XCTAssertNil(saved.first { $0.id == firstID }?.departureDate)
+        XCTAssertEqual(saved.first { $0.id == secondID }?.departureDate, secondDate)
+    }
+
     @MainActor
     func testTripsAndOrderedWaypointsSurviveReopeningAndStaySeparate() async throws {
         let directory = try makeTemporaryDirectory()
@@ -144,20 +431,23 @@ final class TripLibraryTests: XCTestCase {
         XCTAssertNil(library.saveError)
 
         let reopened = TripLibrary(store: store)
-        XCTAssertEqual(reopened.selectedID, tourID)
+        XCTAssertEqual(reopened.selectedID, coastID)
+        XCTAssertEqual(reopened.selectedTrip?.name, "Küste")
+        XCTAssertEqual(reopened.planner.orderedWaypoints, [coastStart])
+        XCTAssertFalse(reopened.planner.automaticRouting)
+        reopened.select(tourID)
         XCTAssertEqual(reopened.selectedTrip?.name, "Alpen")
         XCTAssertEqual(reopened.selectedTrip?.notes, "Über die Alpen")
         XCTAssertEqual(reopened.planner.orderedWaypoints, [start, second, first, destination])
         XCTAssertEqual(reopened.planner.stops.map { $0.coordinate.longitude }, [2, 1])
         XCTAssertTrue(reopened.planner.manualOrder)
-        XCTAssertFalse(reopened.planner.automaticRouting)
         reopened.select(coastID)
-        XCTAssertEqual(reopened.planner.orderedWaypoints, [coastStart])
 
         reopened.delete(coastID)
         XCTAssertEqual(reopened.selectedID, tourID)
         XCTAssertEqual(reopened.planner.orderedWaypoints, [start, second, first, destination])
         XCTAssertEqual(try store.load().map(\.id), [tourID])
+        XCTAssertEqual(TripLibrary(store: store).selectedID, tourID)
         reopened.planner.addStop(stop("Dritter Halt", longitude: 1.5))
         XCTAssertEqual(Array(reopened.planner.stops.prefix(2)), [second, first])
     }
@@ -237,5 +527,38 @@ final class TripLibraryTests: XCTestCase {
 
     private func stop(_ name: String, longitude: Double) -> RoadStop {
         RoadStop(name: name, subtitle: "", coordinate: .init(latitude: 0, longitude: longitude))
+    }
+
+    private func stop(_ name: String, latitude: Double, longitude: Double) -> RoadStop {
+        RoadStop(name: name, subtitle: "", coordinate: .init(latitude: latitude, longitude: longitude))
+    }
+
+    private func makeImageData() throws -> Data {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8,
+                                              bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.6, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        let image = try XCTUnwrap(context.makeImage())
+        let output = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString,
+                                                                          1, nil))
+        let gps: [String: Any] = [
+            kCGImagePropertyGPSLatitude as String: 47.25,
+            kCGImagePropertyGPSLatitudeRef as String: "S",
+            kCGImagePropertyGPSLongitude as String: 11.5,
+            kCGImagePropertyGPSLongitudeRef as String: "E"
+        ]
+        let exif: [String: Any] = [
+            kCGImagePropertyExifDateTimeOriginal as String: "2026:07:18 19:25:30",
+            kCGImagePropertyExifOffsetTimeOriginal as String: "+02:00"
+        ]
+        let properties: [String: Any] = [
+            kCGImagePropertyGPSDictionary as String: gps,
+            kCGImagePropertyExifDictionary as String: exif
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return output as Data
     }
 }

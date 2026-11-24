@@ -1,8 +1,104 @@
 import AppKit
+import ImageIO
 import MapKit
+import UniformTypeIdentifiers
 import XCTest
 
 final class RoadTripAssistUITests: XCTestCase {
+    @MainActor
+    func testPhotoMapPopoverDeletesPhotoWithoutUpdateError() throws {
+        continueAfterFailure = false
+        let (app, directory) = try makeTestApp()
+        defer { app.terminate() }
+        try makeGeotaggedPhoto(at: directory.appending(path: "test-photo.jpg"))
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-photo", "--ui-testing-main-display"]
+        launchPlanner(app)
+        let marker = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "planner-photo-marker-"))
+            .firstMatch
+        XCTAssertTrue(marker.waitForExistence(timeout: 10))
+        let id = String(marker.identifier.dropFirst("planner-photo-marker-".count))
+        marker.click()
+        let caption = app.textFields["photo-detail-caption-\(id)"]
+        XCTAssertTrue(caption.waitForExistence(timeout: 5))
+        caption.click()
+        caption.typeText("Testbild")
+        app.buttons["photo-detail-delete-\(id)"].click()
+        let confirm = app.buttons["confirm-delete-photo-\(id)"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.click()
+        XCTAssertTrue(marker.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Foto konnte nicht aktualisiert werden"].exists)
+        app.buttons["manage-trip-photos"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["empty-photo-library"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testTripStartDateCanBeSavedReopenedAndRemoved() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.buttons["Bearbeiten"].click()
+        let toggle = app.checkBoxes["trip-has-departure-date"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        toggle.click()
+        XCTAssertTrue(app.descendants(matching: .any)["trip-departure-date-picker"].firstMatch.exists)
+        app.buttons["Speichern"].click()
+        let label = app.descendants(matching: .any)["trip-departure-date"].firstMatch
+        XCTAssertTrue(label.waitForExistence(timeout: 5))
+        let savedDate = label.value as? String ?? label.label
+        XCTAssertTrue(savedDate.contains("Start"))
+        app.terminate()
+
+        launchPlanner(app)
+        XCTAssertTrue(label.waitForExistence(timeout: 5))
+        XCTAssertEqual(label.value as? String ?? label.label, savedDate)
+        app.buttons["Bearbeiten"].click()
+        XCTAssertEqual(toggle.value as? Int, 1)
+        toggle.click()
+        app.buttons["Speichern"].click()
+        XCTAssertTrue(label.waitForNonExistence(timeout: 5))
+        app.terminate()
+        launchPlanner(app)
+        XCTAssertFalse(label.exists)
+    }
+
+    @MainActor
+    func testRoutingFailureOpensAndClosesDiagnosticPopover() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-routing-error", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.buttons["Automatische Berechnung aktivieren"].click()
+        app.buttons["Aktivieren"].click()
+        let error = app.buttons["routing-diagnostics"]
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        error.click()
+        let details = app.staticTexts["routing-diagnostics-details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        let text = (details.value as? String) ?? details.label
+        XCTAssertTrue(text.contains("Test-Routenfehler"), "Unexpected diagnostic text: \(text)")
+        XCTAssertTrue(text.contains("Startstadt"))
+        app.buttons["Schließen"].click()
+        XCTAssertTrue(details.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Erneut versuchen"].exists)
+    }
+
+    @MainActor
+    func testPhotoManagerOpensForSelectedTrip() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        launchPlanner(app)
+        createTrip(in: app)
+
+        app.buttons["manage-trip-photos"].click()
+        XCTAssertTrue(app.buttons["photo-files-import"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["empty-photo-library"].exists)
+    }
+
     @MainActor
     func testWaypointCategoryAndOvernightSurviveReopening() throws {
         continueAfterFailure = false
@@ -707,6 +803,25 @@ final class RoadTripAssistUITests: XCTestCase {
         app.launchArguments = ["--ui-testing", "-AppleLocale", "de_DE", "-ApplePersistenceIgnoreState", "YES"]
         app.launchEnvironment["ROADTRIP_UI_TEST_DIRECTORY"] = directory.path
         return (app, directory)
+    }
+
+    private func makeGeotaggedPhoto(at url: URL) throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8,
+                                              bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(NSColor.systemPurple.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        let image = try XCTUnwrap(context.makeImage())
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL,
+                                                                       UTType.jpeg.identifier as CFString, 1, nil))
+        let gps: [String: Any] = [
+            kCGImagePropertyGPSLatitude as String: 50.0,
+            kCGImagePropertyGPSLatitudeRef as String: "N",
+            kCGImagePropertyGPSLongitude as String: 12.5,
+            kCGImagePropertyGPSLongitudeRef as String: "E"
+        ]
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyGPSDictionary as String: gps] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
     }
 
     @MainActor

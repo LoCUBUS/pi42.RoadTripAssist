@@ -12,10 +12,12 @@
 		1512031CF43ADAF07E53D9AC /* PlannerUITestFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A719C94FB229A3241659378 /* PlannerUITestFixture.swift */; };
 		1A10BBD238AF486A4344FA0E /* RoadTripAssistApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EABD245856A3D8E2B4496EF5 /* RoadTripAssistApp.swift */; };
 		2EDB380FBBF2729C62819EB0 /* RouteOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E43AA426E6CDDF28B43F998 /* RouteOptimizer.swift */; };
+		4473C72087F132A2C743A192 /* TripPhoto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17A419545154A27734E4F0C5 /* TripPhoto.swift */; };
 		6AD337D0E4406AC89C72D463 /* TripPlannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 255349A8D6F510A417679431 /* TripPlannerView.swift */; };
 		83F58EF69F785D45EDCFF2CF /* TripPlannerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70AAFE57B3930D5ABCF3E30A /* TripPlannerViewModel.swift */; };
 		9505B58208B62FF6A5057FFB /* TripLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */; };
 		DBD665A069F4B9E1BC91A7FB /* RoadStop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 065A15EDB1861AD95F3A9114 /* RoadStop.swift */; };
+		FB1350A3F1E1B7CA8B27E4B6 /* TripPhotoLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE4035B7CEF995E6DDD27D5 /* TripPhotoLibraryView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -30,6 +32,8 @@
 
 /* Begin PBXFileReference section */
 		065A15EDB1861AD95F3A9114 /* RoadStop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadStop.swift; sourceTree = "<group>"; };
+		17A419545154A27734E4F0C5 /* TripPhoto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPhoto.swift; sourceTree = "<group>"; };
+		1DE4035B7CEF995E6DDD27D5 /* TripPhotoLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPhotoLibraryView.swift; sourceTree = "<group>"; };
 		255349A8D6F510A417679431 /* TripPlannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPlannerView.swift; sourceTree = "<group>"; };
 		4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripLibrary.swift; sourceTree = "<group>"; };
 		70AAFE57B3930D5ABCF3E30A /* TripPlannerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPlannerViewModel.swift; sourceTree = "<group>"; };
@@ -79,6 +83,8 @@
 				EABD245856A3D8E2B4496EF5 /* RoadTripAssistApp.swift */,
 				7E43AA426E6CDDF28B43F998 /* RouteOptimizer.swift */,
 				4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */,
+				17A419545154A27734E4F0C5 /* TripPhoto.swift */,
+				1DE4035B7CEF995E6DDD27D5 /* TripPhotoLibraryView.swift */,
 				255349A8D6F510A417679431 /* TripPlannerView.swift */,
 				70AAFE57B3930D5ABCF3E30A /* TripPlannerViewModel.swift */,
 			);
@@ -169,6 +175,8 @@
 				1A10BBD238AF486A4344FA0E /* RoadTripAssistApp.swift in Sources */,
 				2EDB380FBBF2729C62819EB0 /* RouteOptimizer.swift in Sources */,
 				9505B58208B62FF6A5057FFB /* TripLibrary.swift in Sources */,
+				4473C72087F132A2C743A192 /* TripPhoto.swift in Sources */,
+				FB1350A3F1E1B7CA8B27E4B6 /* TripPhotoLibraryView.swift in Sources */,
 				6AD337D0E4406AC89C72D463 /* TripPlannerView.swift in Sources */,
 				83F58EF69F785D45EDCFF2CF /* TripPlannerViewModel.swift in Sources */,
 			);

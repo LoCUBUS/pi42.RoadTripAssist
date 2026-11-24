@@ -6,6 +6,123 @@ import XCTest
 
 final class ProgressiveRoutingTests: XCTestCase {
     @MainActor
+    func testDepartureDateRecalculatesCachedLegsAndReachesOptimization() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let b = stop("B", 0, 2)
+        let end = stop("Ziel", 0, 3)
+        let date = Date(timeIntervalSince1970: 2_000_000_000)
+        var dates: [Date?] = []
+        let service = MapKitRouteService { _, _, date in
+            dates.append(date)
+            return RouteLeg(duration: 1, distance: 100, coordinates: [])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a, b], destination: end, manualOrder: true))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(dates.count, 3)
+        XCTAssertTrue(dates.allSatisfy { $0 == nil })
+
+        model.setDepartureDate(date)
+        XCTAssertNil(model.roadPreview)
+        try await waitForRouting(model)
+        XCTAssertEqual(dates.count, 6)
+        XCTAssertTrue(dates.suffix(3).allSatisfy { $0 == date })
+
+        model.optimizeRoute()
+        try await waitForRouting(model)
+        XCTAssertEqual(dates.count, 9)
+        XCTAssertTrue(dates.suffix(3).allSatisfy { $0 == date })
+        model.setDepartureDate(date)
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertEqual(dates.count, 9)
+
+        model.setDepartureDate(nil)
+        try await waitForRouting(model)
+        XCTAssertEqual(dates.count, 12)
+        XCTAssertTrue(dates.suffix(3).allSatisfy { $0 == nil })
+        XCTAssertNotNil(model.roadPreview)
+    }
+
+    @MainActor
+    func testDirectionsRequestIncludesOptionalDepartureDate() {
+        let start = stop("Start", 50, 11)
+        let end = stop("Ziel", 51, 12)
+        let date = Date(timeIntervalSince1970: 2_000_000_000)
+        let request = MapKitRouteService.directionsRequest(from: start, to: end, departureDate: date)
+        XCTAssertEqual(request.departureDate, date)
+        XCTAssertEqual(request.transportType, .automobile)
+        XCTAssertNil(MapKitRouteService.directionsRequest(from: start, to: end, departureDate: nil).departureDate)
+    }
+
+    @MainActor
+    func testChangingDepartureDateRechecksPreviouslyUnavailableConnection() async throws {
+        let start = stop("Start", 0, 0)
+        let end = stop("Ziel", 0, 1)
+        let date = Date(timeIntervalSince1970: 2_000_000_000)
+        var dates: [Date?] = []
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { _, _, date in
+            dates.append(date)
+            return date == nil ? nil : RouteLeg(duration: 1, distance: 100, coordinates: [])
+        })
+        model.loadWaypoints(TripWaypoints(start: start, destination: end))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .failed)
+        XCTAssertEqual(model.unavailableConnections.count, 1)
+
+        model.setDepartureDate(date)
+        try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertTrue(model.unavailableConnections.isEmpty)
+        XCTAssertEqual(dates.count, 2)
+        XCTAssertEqual(dates.last!, date)
+    }
+
+    @MainActor
+    func testChangingDepartureDateCancelsInFlightRoute() async throws {
+        let start = stop("Start", 0, 0)
+        let end = stop("Ziel", 0, 1)
+        let oldDate = Date(timeIntervalSince1970: 2_000_000_000)
+        let newDate = oldDate.addingTimeInterval(86_400)
+        let started = expectation(description: "Old departure date request started")
+        var dates: [Date?] = []
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { _, _, date in
+            dates.append(date)
+            if date == oldDate {
+                started.fulfill()
+                try await Task.sleep(for: .seconds(5))
+            }
+            return RouteLeg(duration: 1, distance: 100, coordinates: [])
+        })
+        model.loadWaypoints(TripWaypoints(start: start, destination: end), departureDate: oldDate)
+        model.enableAutomaticRouting()
+        await fulfillment(of: [started], timeout: 2)
+        model.setDepartureDate(newDate)
+        try await waitForRouting(model)
+
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertEqual(dates, [oldDate, newDate])
+        XCTAssertNotNil(model.roadPreview)
+        XCTAssertNil(model.routingError)
+    }
+
+    func testWaypointFocusRegionShowsApproximatelyTenKilometersAroundWaypoint() {
+        let waypoint = stop("Aussicht", 50, 12)
+        let region = waypointFocusRegion(for: waypoint)
+        XCTAssertEqual(region.center.latitude, waypoint.coordinate.latitude, accuracy: 0.000001)
+        XCTAssertEqual(region.center.longitude, waypoint.coordinate.longitude, accuracy: 0.000001)
+        let center = CLLocation(latitude: region.center.latitude, longitude: region.center.longitude)
+        let north = CLLocation(latitude: region.center.latitude + region.span.latitudeDelta / 2,
+                               longitude: region.center.longitude)
+        let east = CLLocation(latitude: region.center.latitude,
+                              longitude: region.center.longitude + region.span.longitudeDelta / 2)
+        XCTAssertEqual(center.distance(from: north), 10_000, accuracy: 150)
+        XCTAssertEqual(center.distance(from: east), 10_000, accuracy: 150)
+    }
+
+    @MainActor
     func testStageOptimizationKeepsAnchorAndNeverFetchesCrossStageAlternatives() async throws {
         let start = stop("Start", 50, 0)
         let a = stop("A", 50, 1)
@@ -403,6 +520,10 @@ final class ProgressiveRoutingTests: XCTestCase {
         XCTAssertEqual(model.routeStatus, .failed)
         XCTAssertEqual(model.roadPreview?.orderedStops, [a, b])
         XCTAssertTrue(model.routingError?.contains("Internetverbindung") == true)
+        XCTAssertTrue(model.routingError?.contains("„A“ → „Ziel“") == true)
+        XCTAssertFalse(model.routingError?.contains("Parkplatz") == true)
+        XCTAssertTrue(model.routingDiagnostic?.contains("Domain: NSURLErrorDomain") == true)
+        XCTAssertTrue(model.routingDiagnostic?.contains("Code: -1009") == true)
         XCTAssertEqual(model.alternativeConnections.map { "\($0.from.name)-\($0.to.name)" }, ["Start-B"])
 
         failAlternative = false
@@ -410,6 +531,7 @@ final class ProgressiveRoutingTests: XCTestCase {
         try await waitForRouting(model)
         XCTAssertEqual(model.routeStatus, .finished)
         XCTAssertNil(model.routingError)
+        XCTAssertNil(model.routingDiagnostic)
         XCTAssertEqual(model.roadPreview?.orderedStops, [a, b])
         XCTAssertEqual(model.alternativeConnections.count, 3)
     }
@@ -452,12 +574,246 @@ final class ProgressiveRoutingTests: XCTestCase {
         try await waitForRouting(model)
         XCTAssertEqual(model.routeStatus, .failed)
         XCTAssertNil(model.roadPreview)
-        XCTAssertNotNil(model.routingError)
+        XCTAssertTrue(model.routingError?.contains("„Start“ → „Ziel“") == true)
+        XCTAssertTrue(model.routingError?.contains("Parkplatz") == true)
+        XCTAssertTrue(model.routingError?.contains("weder den betroffenen Wegpunkt noch den Grund") == true)
+        XCTAssertTrue(model.routingDiagnostic?.contains("keine weitere Fehlerursache") == true)
         available = true
         model.retryRouting()
         try await waitForRouting(model)
         XCTAssertEqual(model.routeStatus, .finished)
         XCTAssertNotNil(model.roadPreview)
+    }
+
+    @MainActor
+    func testUnavailableConnectionsIdentifyAllAffectedPairs() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let b = stop("B", 0, 2)
+        let end = stop("Ziel", 0, 3)
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { from, to in
+            from == a && to == b ? RouteLeg(duration: 1, distance: 100, coordinates: []) : nil
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a, b], destination: end, manualOrder: true))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+
+        XCTAssertEqual(model.routeStatus, .failed)
+        let error = try XCTUnwrap(model.routingError)
+        XCTAssertTrue(error.contains("„Start“ → „A“"))
+        XCTAssertTrue(error.contains("„B“ → „Ziel“"))
+        XCTAssertFalse(error.contains("„A“ → „B“"))
+        XCTAssertEqual(model.currentConnections.map { "\($0.from.name)-\($0.to.name)" }, ["A-B"])
+        XCTAssertEqual(model.unavailableConnections.map { "\($0.from.name)-\($0.to.name)" },
+                       ["Start-A", "B-Ziel"])
+    }
+
+    @MainActor
+    func testTechnicalFailureDoesNotPreventLaterCurrentConnections() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let end = stop("Ziel", 0, 2)
+        var fail = true
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { from, to in
+            if from == start && to == a && fail { throw URLError(.timedOut) }
+            return RouteLeg(duration: 1, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a], destination: end, manualOrder: true))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+
+        XCTAssertEqual(model.routeStatus, .failed)
+        XCTAssertEqual(model.currentConnections.map { "\($0.from.name)-\($0.to.name)" }, ["A-Ziel"])
+        XCTAssertTrue(model.unavailableConnections.isEmpty)
+        XCTAssertTrue(model.routingError?.contains("„Start“ → „A“") == true)
+        XCTAssertEqual(model.currentRequestErrors.count, 1)
+
+        fail = false
+        model.retryRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertNotNil(model.roadPreview)
+    }
+
+    @MainActor
+    func testMultipleTechnicalFailuresRemainIdentifiable() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let b = stop("B", 0, 2)
+        let end = stop("Ziel", 0, 3)
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { from, to in
+            if from == a && to == b {
+                return RouteLeg(duration: 1, distance: 100, coordinates: [])
+            }
+            throw URLError(.timedOut)
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a, b], destination: end, manualOrder: true))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+
+        XCTAssertEqual(model.currentConnections.map { "\($0.from.name)-\($0.to.name)" }, ["A-B"])
+        XCTAssertEqual(model.currentRequestErrors.count, 2)
+        XCTAssertTrue(model.currentRequestErrors[0].contains("„Start“ → „A“"))
+        XCTAssertTrue(model.currentRequestErrors[1].contains("„B“ → „Ziel“"))
+        let diagnostic = try XCTUnwrap(model.routingDiagnostic)
+        XCTAssertTrue(diagnostic.contains("„Start“ ("))
+        XCTAssertTrue(diagnostic.contains("„Ziel“ ("))
+        XCTAssertEqual(diagnostic.components(separatedBy: "Code: -1001").count - 1, 2)
+    }
+
+    @MainActor
+    func testDirectionsNotFoundPreservesMapKitErrorAndRetryClearsIt() async throws {
+        let start = stop("Start", 50, 10)
+        let end = stop("Ziel", 51, 11)
+        var requests = 0
+        let service = MapKitRouteService { _, _ in
+            requests += 1
+            if requests == 1 {
+                throw NSError(domain: MKErrorDomain, code: Int(MKError.Code.directionsNotFound.rawValue),
+                              userInfo: [NSLocalizedDescriptionKey: "MapKit-Testfehler"])
+            }
+            return RouteLeg(duration: 1, distance: 100, coordinates: [])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, destination: end))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+
+        XCTAssertEqual(model.routeStatus, .failed)
+        XCTAssertEqual(model.unavailableConnections.count, 1)
+        let diagnostic = try XCTUnwrap(model.routingDiagnostic)
+        XCTAssertTrue(diagnostic.contains("Domain: \(MKErrorDomain), Code: \(MKError.Code.directionsNotFound.rawValue)"))
+        XCTAssertTrue(diagnostic.contains("MapKit-Testfehler"))
+        XCTAssertTrue(model.currentRequestErrors.isEmpty)
+
+        model.retryRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(requests, 2)
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertNil(model.routingDiagnostic)
+    }
+
+    @MainActor
+    func testDiagnosticIncludesUnderlyingErrorAndAppTimeout() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let end = stop("Ziel", 0, 2)
+        let model = TripPlannerViewModel(routeService: MapKitRouteService { from, _ in
+            if from == start {
+                throw NSError(domain: "OuterDomain", code: 42, userInfo: [
+                    NSLocalizedDescriptionKey: "Außerer Fehler",
+                    NSUnderlyingErrorKey: NSError(domain: NSURLErrorDomain, code: -1009,
+                                                  userInfo: [NSLocalizedDescriptionKey: "Offline"])
+                ])
+            }
+            throw MapKitRouteError.timeout("A", "Ziel")
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a], destination: end, manualOrder: true))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+
+        let diagnostic = try XCTUnwrap(model.routingDiagnostic)
+        XCTAssertTrue(diagnostic.contains("Domain: OuterDomain, Code: 42"))
+        XCTAssertTrue(diagnostic.contains("Domain: NSURLErrorDomain, Code: -1009"))
+        XCTAssertTrue(diagnostic.contains("App-seitiges Zeitlimit von 12 Sekunden"))
+        XCTAssertEqual(model.currentRequestErrors.count, 2)
+    }
+
+    @MainActor
+    func testParkingSuggestionsCheckBothAdjacentConnectionsAndKeepOriginalWaypoint() async throws {
+        let start = stop("Start", 0, 0)
+        let blocked = stop("Aussicht", 0, 1)
+        let end = stop("Ziel", 0, 2)
+        let unreachable = stop("Parkplatz ohne Zufahrt", 0, 1.001)
+        let accessible = stop("Parkplatz", 0, 1.002)
+        var requests: [String] = []
+        let departureDate = Date(timeIntervalSince1970: 2_000_000_000)
+        var dates: [Date?] = []
+        let service = MapKitRouteService(fetchLeg: { from, to, date in
+            dates.append(date)
+            requests.append("\(from.name)-\(to.name)")
+            if from == start && to == blocked { return nil }
+            if from == unreachable && to == end {
+                throw NSError(domain: MKErrorDomain, code: Int(MKError.Code.directionsNotFound.rawValue))
+            }
+            return RouteLeg(duration: 1, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }, findParking: { waypoint in
+            XCTAssertEqual(waypoint, blocked)
+            return [unreachable, accessible]
+        })
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [blocked], destination: end, manualOrder: true),
+                            departureDate: departureDate)
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        model.searchParking(near: blocked)
+        for _ in 0..<100 where model.isSearchingParking { try await Task.sleep(for: .milliseconds(20)) }
+
+        XCTAssertFalse(model.isSearchingParking)
+        XCTAssertNil(model.parkingSearchError)
+        XCTAssertEqual(model.parkingSuggestions, [accessible])
+        XCTAssertTrue(requests.contains("Start-Parkplatz"))
+        XCTAssertTrue(requests.contains("Parkplatz-Ziel"))
+        XCTAssertTrue(dates.allSatisfy { $0 == departureDate })
+        XCTAssertEqual(model.orderedWaypoints, [start, blocked, end])
+        model.setDestination(stop("Neues Ziel", 0, 3))
+        XCTAssertTrue(model.parkingSuggestions.isEmpty)
+    }
+
+    @MainActor
+    func testParkingSearchErrorsAreReportedWithoutOfferingUnverifiedCandidates() async throws {
+        let start = stop("Start", 0, 0)
+        let end = stop("Ziel", 0, 1)
+        let candidate = stop("Parkplatz", 0, 1.001)
+        let service = MapKitRouteService(fetchLeg: { from, to in
+            if to == candidate { throw URLError(.notConnectedToInternet) }
+            return nil
+        }, findParking: { _ in [candidate] })
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, destination: end))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        model.searchParking(near: end)
+        for _ in 0..<100 where model.isSearchingParking { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(model.parkingSuggestions.isEmpty)
+        XCTAssertTrue(model.parkingSearchError?.contains("Internetverbindung") == true)
+    }
+
+    @MainActor
+    func testOptimizationCanRecoverFromUnavailableCurrentOrder() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let b = stop("B", 0, 2)
+        let end = stop("Ziel", 0, 3)
+        let service = MapKitRouteService { from, to in
+            if from == a && to == b {
+                throw NSError(domain: MKErrorDomain, code: Int(MKError.Code.directionsNotFound.rawValue))
+            }
+            return RouteLeg(duration: 1, distance: 100, coordinates: [])
+        }
+        let route = try await service.planRoute(
+            start: start, stops: [a, b], destination: end, optimize: true,
+            onPreview: { XCTAssertNil($0) }, onProgress: { _, _ in }
+        )
+        XCTAssertEqual(route.orderedStops, [b, a])
+    }
+
+    @MainActor
+    func testOptimizationReportsUnavailableCurrentConnectionsWhenNoOrderWorks() async throws {
+        let start = stop("Start", 0, 0)
+        let a = stop("A", 0, 1)
+        let end = stop("Ziel", 0, 2)
+        let service = MapKitRouteService { _, _ in nil }
+        do {
+            _ = try await service.planRoute(
+                start: start, stops: [a], destination: end, optimize: true,
+                onPreview: { _ in }, onProgress: { _, _ in }
+            )
+            XCTFail("Expected an unavailable route")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("„Start“ → „A“"))
+            XCTAssertTrue(error.localizedDescription.contains("„A“ → „Ziel“"))
+        }
     }
 
     @MainActor
