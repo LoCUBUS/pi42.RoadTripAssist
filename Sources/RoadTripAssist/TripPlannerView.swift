@@ -280,7 +280,7 @@ private struct TripWorkspaceView: View {
             Button("Abbrechen", role: .cancel) {}
         } message: { stage in
             if let overrun = stage.budgetOverrun {
-                Text("Du erreichst „\(stage.end.name)“ voraussichtlich \(overrun.arrivalMinutes - overrun.budgetMinutes) min nach dem Zeitbudget. Der Budgetpunkt und der Suchkreis werden ausgeblendet. Die Route bleibt unverändert.")
+                Text("Du erreichst „\(stage.end.name)“ voraussichtlich \(DurationInputFormat.string(overrun.arrivalMinutes - overrun.budgetMinutes)) (hh:mm) nach dem Zeitbudget. Der Budgetpunkt und der Suchkreis werden ausgeblendet. Die Route bleibt unverändert.")
             }
         }
     }
@@ -400,29 +400,29 @@ private struct TripWorkspaceView: View {
                             MapPolyline(coordinates: connection.leg.coordinates)
                                 .stroke(.blue, lineWidth: 4)
                         }
-                        if mapTourID == nil && stage == nil && !showSuggestionOnMap {
-                            ForEach(model.lodgingTours) { tour in
-                                if let planner = model.tourPlanners[tour.id] {
-                                    ForEach(planner.currentConnections) { connection in
-                                        if !connection.leg.isTransit && connection.leg.coordinates.count >= 2 {
-                                            MapPolyline(coordinates: connection.leg.coordinates)
-                                                .stroke(.orange, lineWidth: 4)
-                                        }
-                                    }
-                                    ForEach(Array(zip(planner.orderedWaypoints, planner.orderedWaypoints.dropFirst()).enumerated()),
-                                            id: \.offset) { _, pair in
-                                        let (from, to) = pair
-                                        if planner.mode(from: from, to: to) == .walking && planner.isTransit(from: from, to: to) {
-                                            MapPolyline(coordinates: [from.coordinate, to.coordinate])
-                                                .stroke(.orange, style: StrokeStyle(lineWidth: 4, dash: [2, 6]))
-                                        }
-                                    }
-                                    ForEach(planner.stops) { stop in
-                                        Marker("Rundtour: \(stop.name)", systemImage: "arrow.triangle.2.circlepath",
-                                               coordinate: stop.coordinate)
-                                            .tint(.orange)
-                                    }
+                    }
+                }
+                if mapTourID == nil && stage == nil && !showSuggestionOnMap {
+                    ForEach(model.lodgingTours) { tour in
+                        if let planner = model.tourPlanners[tour.id] {
+                            ForEach(planner.currentConnections) { connection in
+                                if !connection.leg.isTransit && connection.leg.coordinates.count >= 2 {
+                                    MapPolyline(coordinates: connection.leg.coordinates)
+                                        .stroke(.orange, lineWidth: 4)
                                 }
+                            }
+                            ForEach(Array(zip(planner.orderedWaypoints, planner.orderedWaypoints.dropFirst()).enumerated()),
+                                    id: \.offset) { _, pair in
+                                let (from, to) = pair
+                                if planner.mode(from: from, to: to) == .walking && planner.isTransit(from: from, to: to) {
+                                    MapPolyline(coordinates: [from.coordinate, to.coordinate])
+                                        .stroke(.orange, style: StrokeStyle(lineWidth: 4, dash: [2, 6]))
+                                }
+                            }
+                            ForEach(planner.stops) { stop in
+                                Marker("Rundtour: \(stop.name)", systemImage: "arrow.triangle.2.circlepath",
+                                       coordinate: stop.coordinate)
+                                    .tint(.orange)
                             }
                         }
                     }
@@ -1217,7 +1217,7 @@ private struct TripWorkspaceView: View {
                 .buttonStyle(.borderless)
                 .accessibilityIdentifier("restore-budget-point-\(number)")
             } else if let overrun = stage.budgetOverrun {
-                Button("Übernachtung \(overrun.arrivalMinutes - overrun.budgetMinutes) min nach Budget bestätigen") {
+                Button("Übernachtung \(DurationInputFormat.string(overrun.arrivalMinutes - overrun.budgetMinutes)) nach Budget bestätigen") {
                     overrunStage = stage
                 }
                 .buttonStyle(.borderless)
@@ -1965,7 +1965,7 @@ private struct LodgingTourCard: View {
                             model.clearBudgetOverrunAcceptance(endingAt: stage.end)
                         }
                     } else {
-                        Text("Budget voraussichtlich um \(overrun.arrivalMinutes - overrun.budgetMinutes) min überschritten.")
+                        Text("Budget voraussichtlich um \(DurationInputFormat.string(overrun.arrivalMinutes - overrun.budgetMinutes)) (hh:mm) überschritten.")
                             .font(.caption).foregroundStyle(.orange)
                         Button("Budgetüberschreitung bestätigen") { confirmOverrun = true }
                         Button("Budgetpunkt auf der Karte zeigen", action: onMap)

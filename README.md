@@ -66,6 +66,9 @@ unsaved tour edits.
 The latest full Swift run executed 101 tests with no failures; four optional
 live MapKit tests were skipped. The latest full UI run executed 26 tests with
 no failures; the optional Apple Maps smoke test was skipped.
+An additional UI regression test verifies that combined-map tour markers remain
+present before and after main-journey routing and after reopening; it passed
+after the marker fix. The full UI suite above predates this additional test.
 The system Photos and file pickers and every hover animation are not covered by
 these automated tests.
 On multi-monitor setups, screenshot tests move their test window to the main
@@ -145,6 +148,8 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   its own duplicates. The same place can therefore occur in different routes.
   Use the tour's map button to show it alone, or "Hauptreise und Rundtouren"
   to return to the combined map, which draws each route separately.
+  Tour waypoint markers remain visible in the combined map before, during and
+  after main-journey routing, including after reopening without cached routes.
   Photo assignment and photo waypoint insertion also distinguish the main
   journey from each tour.
   Changing the lodging moves its tours' endpoints after confirmation; remove
@@ -375,7 +380,8 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
    does not search for hotels or change the route.
 4. **Accept a later overnight arrival if needed.** If the stage reaches the
    planned overnight stop after the budget runs out, its summary offers
-   "Übernachtung … min nach Budget bestätigen". In the dialog, choose
+   "Übernachtung hh:mm nach Budget bestätigen". Overruns use hours and minutes
+   (e.g. `01:15` for 75 minutes). In the dialog, choose
    "Budgetpunkt ausblenden" to hide both the placeholder and the circle,
    or cancel to leave them visible. The warning and route stay unchanged.
    The choice is saved locally, can be reversed with "Budgetpunkt wieder

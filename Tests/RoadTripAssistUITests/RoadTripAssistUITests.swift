@@ -6,6 +6,47 @@ import XCTest
 
 final class RoadTripAssistUITests: XCTestCase {
     @MainActor
+    func testCombinedMapKeepsTourMarkersBeforeAndAfterMainRouting() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-optimization", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        let list = app.descendants(matching: .any)["stage-list"].firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        list.scroll(byDeltaX: 0, deltaY: -180)
+        app.buttons["toggle-overnight-2"].click()
+        app.buttons["add-round-trip-1"].click()
+        list.scroll(byDeltaX: 0, deltaY: -300)
+        app.buttons["lodging-tour-add-stop"].click()
+        let search = app.textFields["lodging-tour-search"]
+        search.click()
+        search.typeText("Zwischenstadt B")
+        list.scroll(byDeltaX: 0, deltaY: -200)
+        let result = app.buttons["lodging-tour-search-result-0"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        result.click()
+        let map = app.descendants(matching: .any)["planner-map"].firstMatch
+        let marker = map.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS %@", "Rundtour: Zwischenstadt B")
+        ).firstMatch
+        XCTAssertTrue(marker.waitForExistence(timeout: 5), "Tour marker must exist without main-route connections")
+        app.buttons["Automatische Berechnung aktivieren"].click()
+        app.buttons["Aktivieren"].click()
+        XCTAssertTrue(app.staticTexts["route-distance"].waitForExistence(timeout: 10))
+        XCTAssertTrue(marker.exists, "Completing the main route must not remove tour markers")
+        list.scroll(byDeltaX: 0, deltaY: -250)
+        app.buttons["lodging-tour-calculate"].click()
+        app.buttons["lodging-tour-confirm-routing"].click()
+        XCTAssertTrue(app.staticTexts["journey-total"].waitForExistence(timeout: 10))
+        XCTAssertTrue(marker.exists)
+        app.terminate()
+        launchPlanner(app)
+        XCTAssertTrue(marker.waitForExistence(timeout: 5), "Reopening must show tour markers without cached routing")
+    }
+
+    @MainActor
     func testChangingTripTypeRequiresConfirmationAndSurvivesReopening() throws {
         continueAfterFailure = false
         let (app, _) = try makeTestApp()
@@ -548,8 +589,11 @@ final class RoadTripAssistUITests: XCTestCase {
         let point = app.buttons["budget-placeholder-1"]
         XCTAssertTrue(point.waitForExistence(timeout: 5))
         let confirm = app.buttons["confirm-budget-overrun-1"]
-        XCTAssertEqual(confirm.label, "Übernachtung 5 min nach Budget bestätigen")
+        XCTAssertEqual(confirm.label, "Übernachtung 00:05 nach Budget bestätigen")
         confirm.click()
+        XCTAssertTrue(app.staticTexts.matching(
+            NSPredicate(format: "value CONTAINS %@", "00:05 (hh:mm) nach dem Zeitbudget")
+        ).firstMatch.waitForExistence(timeout: 5))
         app.buttons["Abbrechen"].click()
         XCTAssertTrue(point.exists)
         confirm.click()
