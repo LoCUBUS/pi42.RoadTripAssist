@@ -39,8 +39,10 @@ struct RouteLeg {
     let duration: TimeInterval
     let distance: CLLocationDistance
     let coordinates: [CLLocationCoordinate2D]
+    var isTransit = false
 
     func coordinate(atFraction fraction: Double) -> CLLocationCoordinate2D? {
+        guard !isTransit else { return nil }
         let worldWidth = MKMapRect.world.width
         let points = coordinates.map(MKMapPoint.init)
         let segments = zip(points, points.dropFirst()).map { from, to -> (MKMapPoint, MKMapPoint, Double) in
@@ -101,6 +103,13 @@ struct RouteRequestFailure {
     let error: Error
 }
 
+struct RouteRequestActivity {
+    let from: RoadStop
+    let to: RoadStop
+    let mode: MapKitRouteService.Transport
+    let startedAt: Date
+}
+
 enum RouteCalculationStep: Equatable {
     case streetRoute(done: Int, total: Int)
     case alternativeLegs(done: Int, total: Int)
@@ -109,9 +118,14 @@ enum RouteCalculationStep: Equatable {
 
 @MainActor
 final class MapKitRouteService {
+    enum Transport: Hashable {
+        case driving, walking, transit
+    }
+
     private struct Pair: Hashable {
         let from: UUID
         let to: UUID
+        let mode: Transport
     }
 
     private enum CachedLeg {
@@ -126,10 +140,10 @@ final class MapKitRouteService {
 
     private var legs: [Pair: CachedLeg] = [:]
     private var cachedDepartureDate: Date?
-    private let fetchLeg: @MainActor (RoadStop, RoadStop, Date?) async throws -> RouteLeg?
+    private let fetchLeg: @MainActor (RoadStop, RoadStop, Date?, Transport) async throws -> RouteLeg?
     private let findParking: @MainActor (RoadStop) async throws -> [RoadStop]
 
-    init(fetchLeg: (@MainActor (RoadStop, RoadStop, Date?) async throws -> RouteLeg?)? = nil,
+    init(fetchLeg: (@MainActor (RoadStop, RoadStop, Date?, Transport) async throws -> RouteLeg?)? = nil,
          findParking: (@MainActor (RoadStop) async throws -> [RoadStop])? = nil) {
         self.fetchLeg = fetchLeg ?? Self.calculateLeg
         self.findParking = findParking ?? Self.searchParking
@@ -137,11 +151,24 @@ final class MapKitRouteService {
 
     convenience init(fetchLeg: @escaping @MainActor (RoadStop, RoadStop) async throws -> RouteLeg?,
                      findParking: (@MainActor (RoadStop) async throws -> [RoadStop])? = nil) {
-        self.init(fetchLeg: { from, to, _ in try await fetchLeg(from, to) }, findParking: findParking)
+        self.init(fetchLeg: { from, to, _, _ in try await fetchLeg(from, to) }, findParking: findParking)
+    }
+
+    convenience init(fetchLeg: @escaping @MainActor (RoadStop, RoadStop, Date?) async throws -> RouteLeg?,
+                     findParking: (@MainActor (RoadStop) async throws -> [RoadStop])? = nil) {
+        self.init(fetchLeg: { from, to, date, _ in try await fetchLeg(from, to, date) }, findParking: findParking)
+    }
+
+    func independentService() -> MapKitRouteService {
+        MapKitRouteService(fetchLeg: fetchLeg, findParking: findParking)
     }
 
     func clearUnavailableLegs() {
         legs = legs.filter { $0.value.route != nil }
+    }
+
+    func clearLegs() {
+        legs.removeAll()
     }
 
     func search(for query: String) async throws -> [RoadStop] {
@@ -193,8 +220,12 @@ final class MapKitRouteService {
         anchors: Set<RoadStop.ID> = [],
         optimize: Bool,
         departureDate: Date? = nil,
+        stageModes: [RoadStop.ID: TravelMode] = [:],
+        transitLegs: Set<TransitLeg> = [],
+        roundTripEndIDs: Set<RoadStop.ID> = [],
         onPreview: (PlannedRoute?) -> Void,
         onCurrentConnections: ([RouteConnection], [UnavailableRouteConnection], [RouteRequestFailure]) -> Void = { _, _, _ in },
+        onRequest: (RouteRequestActivity?) -> Void = { _ in },
         onConnections: ([RouteConnection]) -> Void = { _ in },
         onProgress: (Int, Int) -> Void,
         onStep: (RouteCalculationStep) -> Void = { _ in }
@@ -211,7 +242,23 @@ final class MapKitRouteService {
         }
         legs = legs.filter { activeIDs.contains($0.key.from) && activeIDs.contains($0.key.to) }
         let stages = TripStage.ranges(in: locations, anchors: anchors)
-        let previewPairs = pathPairs(locations)
+        func pair(_ from: RoadStop, _ to: RoadStop, in stage: ClosedRange<Int>) -> Pair {
+            let stageMode = stageModes[locations[stage.upperBound].id] ?? .driving
+            let mode: Transport = stageMode == .driving ? .driving
+                : (transitLegs.contains(TransitLeg(from: from.id, to: to.id)) ? .transit : .walking)
+            return Pair(from: from.id, to: to.id, mode: mode)
+        }
+        func pairs(_ ordered: [RoadStop]) -> [Pair] {
+            TripStage.ranges(in: ordered, anchors: anchors).flatMap { stage in
+                zip(ordered[stage].dropLast(), ordered[stage].dropFirst()).map { from, to in
+                    let stageMode = stageModes[ordered[stage.upperBound].id] ?? .driving
+                    let mode: Transport = stageMode == .driving ? .driving
+                        : (transitLegs.contains(TransitLeg(from: from.id, to: to.id)) ? .transit : .walking)
+                    return Pair(from: from.id, to: to.id, mode: mode)
+                }
+            }
+        }
+        let previewPairs = pairs(locations)
         let largestStage = stages.map { $0.count - 2 }.max() ?? 0
         let supportsExactOptimization = largestStage <= RouteOptimizer.maximumExactStopCount
         var extraPairs: [Pair] = []
@@ -222,8 +269,8 @@ final class MapKitRouteService {
                 let end = stage.upperBound
                 for from in start..<end {
                     for to in (start + 1)...end where from != to && (from != start || to != end) {
-                        let pair = Pair(from: locations[from].id, to: locations[to].id)
-                        if !previewSet.contains(pair) { extraPairs.append(pair) }
+                        let candidate = pair(locations[from], locations[to], in: stage)
+                        if !previewSet.contains(candidate) { extraPairs.append(candidate) }
                     }
                 }
             }
@@ -267,9 +314,20 @@ final class MapKitRouteService {
                 guard let from = stopsByID[pair.from], let to = stopsByID[pair.to] else {
                     throw RouteOptimizationError.invalidStopIndices
                 }
+                onRequest(RouteRequestActivity(from: from, to: to, mode: pair.mode, startedAt: Date()))
+                defer { onRequest(nil) }
                 let leg: RouteLeg?
                 do {
-                    leg = try await fetchLeg(from, to, departureDate)
+                    if roundTripEndIDs.contains(to.id) && pair.mode != .transit
+                        && from.coordinate.latitude == to.coordinate.latitude
+                        && from.coordinate.longitude == to.coordinate.longitude {
+                        leg = RouteLeg(duration: 0, distance: 0, coordinates: [from.coordinate, to.coordinate])
+                    } else if var result = try await fetchLeg(from, to, departureDate, pair.mode) {
+                        result.isTransit = pair.mode == .transit
+                        leg = result
+                    } else {
+                        leg = nil
+                    }
                 } catch {
                     try Task.checkCancellation()
                     if (error as? MKError)?.code == .directionsNotFound {
@@ -305,6 +363,23 @@ final class MapKitRouteService {
         }
 
         try await loadLegs(previewPairs, continueAfterError: true, step: RouteCalculationStep.streetRoute(done:total:))
+        func route(for ordered: [RoadStop]) -> PlannedRoute? {
+            let path = pairs(ordered)
+            let available = path.compactMap { legs[$0]?.route }
+            guard available.count == path.count else { return nil }
+            return PlannedRoute(orderedStops: Array(ordered.dropFirst().dropLast()), legs: available)
+        }
+        func missingRouteError(for ordered: [RoadStop]) -> MapKitRouteError {
+            let byID = Dictionary(uniqueKeysWithValues: ordered.map { ($0.id, $0) })
+            let unavailable = pairs(ordered).compactMap { pair -> String? in
+                guard case .unavailable? = legs[pair], let from = byID[pair.from], let to = byID[pair.to] else {
+                    return nil
+                }
+                return "„\(from.name)“ → „\(to.name)“"
+            }
+            return pairs(ordered).contains(where: { $0.mode != .driving })
+                ? .missingConnection(unavailable) : .missingRoute(unavailable)
+        }
         let preview = route(for: locations)
         onPreview(preview)
         if let firstPreviewError { throw firstPreviewError }
@@ -323,7 +398,7 @@ final class MapKitRouteService {
         let matrices = stages.map { stage in
             locations[stage].map { from in
                 locations[stage].map { to in
-                    legs[Pair(from: from.id, to: to.id)]?.route?.duration ?? .infinity
+                    legs[pair(from, to, in: stage)]?.route?.duration ?? .infinity
                 }
             }
         }
@@ -352,25 +427,6 @@ final class MapKitRouteService {
         return route
     }
 
-    private func pathPairs(_ locations: [RoadStop]) -> [Pair] {
-        zip(locations, locations.dropFirst()).map { Pair(from: $0.id, to: $1.id) }
-    }
-
-    private func missingRouteError(for locations: [RoadStop]) -> MapKitRouteError {
-        let unavailable = zip(locations, locations.dropFirst()).compactMap { from, to -> String? in
-            guard case .unavailable? = legs[Pair(from: from.id, to: to.id)] else { return nil }
-            return "„\(from.name)“ → „\(to.name)“"
-        }
-        return .missingRoute(unavailable)
-    }
-
-    private func route(for locations: [RoadStop]) -> PlannedRoute? {
-        let pairs = pathPairs(locations)
-        let available = pairs.compactMap { legs[$0]?.route }
-        guard available.count == pairs.count else { return nil }
-        return PlannedRoute(orderedStops: Array(locations.dropFirst().dropLast()), legs: available)
-    }
-
     func accessibleParking(near waypoint: RoadStop, previous: RoadStop?, next: RoadStop?,
                            departureDate: Date? = nil) async throws -> [RoadStop] {
         let candidates = try await findParking(waypoint)
@@ -386,7 +442,7 @@ final class MapKitRouteService {
 
     private func parkingConnectionAvailable(from: RoadStop, to: RoadStop, departureDate: Date?) async throws -> Bool {
         do {
-            return try await fetchLeg(from, to, departureDate) != nil
+            return try await fetchLeg(from, to, departureDate, .driving) != nil
         } catch {
             try Task.checkCancellation()
             if (error as? MKError)?.code == .directionsNotFound { return false }
@@ -436,17 +492,23 @@ final class MapKitRouteService {
         return item
     }
 
-    static func directionsRequest(from: RoadStop, to: RoadStop, departureDate: Date?) -> MKDirections.Request {
+    static func directionsRequest(from: RoadStop, to: RoadStop, departureDate: Date?,
+                                  mode: Transport = .driving) -> MKDirections.Request {
         let request = MKDirections.Request()
         request.source = mapItem(for: from)
         request.destination = mapItem(for: to)
-        request.transportType = .automobile
+        switch mode {
+        case .driving: request.transportType = .automobile
+        case .walking: request.transportType = .walking
+        case .transit: request.transportType = .transit
+        }
         request.departureDate = departureDate
         return request
     }
 
-    private static func calculateLeg(from: RoadStop, to: RoadStop, departureDate: Date?) async throws -> RouteLeg? {
-        let request = directionsRequest(from: from, to: to, departureDate: departureDate)
+    private static func calculateLeg(from: RoadStop, to: RoadStop, departureDate: Date?,
+                                     mode: Transport) async throws -> RouteLeg? {
+        let request = directionsRequest(from: from, to: to, departureDate: departureDate, mode: mode)
         let directions = MKDirections(request: request)
         var timedOut = false
         let timeout = Task {
@@ -456,6 +518,24 @@ final class MapKitRouteService {
         }
         defer { timeout.cancel() }
 
+        if mode == .transit {
+            do {
+                let eta = try await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    return try await directions.calculateETA()
+                } onCancel: {
+                    Task { @MainActor in directions.cancel() }
+                }
+                try Task.checkCancellation()
+                if timedOut { throw MapKitRouteError.timeout(from.name, to.name) }
+                return RouteLeg(duration: eta.expectedTravelTime, distance: eta.distance,
+                                coordinates: [], isTransit: true)
+            } catch {
+                try Task.checkCancellation()
+                if timedOut { throw MapKitRouteError.timeout(from.name, to.name) }
+                throw error
+            }
+        }
         let response: MKDirections.Response
         do {
             response = try await withTaskCancellationHandler {
@@ -499,11 +579,14 @@ final class MapKitRouteService {
 
 enum MapKitRouteError: Error, LocalizedError {
     case missingRoute([String])
+    case missingConnection([String])
     case timeout(String, String)
     case requestFailed(from: String, to: String, underlying: Error)
 
     var errorDescription: String? {
         switch self {
+        case .missingConnection(let connections):
+            return "MapKit konnte diese Verbindungen nicht berechnen: \(connections.joined(separator: ", ")). Prüfe beide Punkte und das gewählte Verkehrsmittel."
         case .missingRoute(let connections):
             if connections.isEmpty {
                 return "MapKit hat keine durchgehende Autoroute gefunden."

@@ -197,15 +197,25 @@ struct PhotoMetadata: Sendable {
 }
 
 enum PhotoAssignmentSuggester {
+    struct Context {
+        let waypoints: [RoadStop]
+        let stages: [TripStage]
+        let routeLegs: [RouteLeg]?
+    }
+
     static let waypointRadius: CLLocationDistance = 2_000
     static let routeRadius: CLLocationDistance = 2_000
     static let stageRadius: CLLocationDistance = 20_000
 
     static func suggest(at coordinate: CLLocationCoordinate2D, waypoints: [RoadStop], stages: [TripStage],
                         routeLegs: [RouteLeg]?) -> PhotoAssignmentTarget? {
-        guard CLLocationCoordinate2DIsValid(coordinate), !waypoints.isEmpty else { return nil }
+        suggest(at: coordinate, contexts: [Context(waypoints: waypoints, stages: stages, routeLegs: routeLegs)])
+    }
+
+    static func suggest(at coordinate: CLLocationCoordinate2D, contexts: [Context]) -> PhotoAssignmentTarget? {
+        guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
         let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let nearestWaypoint = waypoints
+        let nearestWaypoint = contexts.flatMap(\.waypoints)
             .map { ($0, location.distance(from: CLLocation(latitude: $0.coordinate.latitude,
                                                             longitude: $0.coordinate.longitude))) }
             .min { $0.1 < $1.1 }
@@ -214,19 +224,22 @@ enum PhotoAssignmentSuggester {
             return .waypoint(nearestWaypoint.0.id)
         }
 
-        if let routeLegs, routeLegs.count == waypoints.count - 1 {
-            let nearestSegment = routeLegs.enumerated().map { index, leg in
-                (index, distance(from: coordinate, to: leg.coordinates,
-                                 start: waypoints[index].coordinate, end: waypoints[index + 1].coordinate))
-            }.min { $0.1 < $1.1 }
-            if let nearestSegment, nearestSegment.1 <= routeRadius {
-                return .routeSegment(from: waypoints[nearestSegment.0].id,
-                                     to: waypoints[nearestSegment.0 + 1].id)
+        let segments: [(PhotoAssignmentTarget, CLLocationDistance)] = contexts.flatMap { context -> [(PhotoAssignmentTarget, CLLocationDistance)] in
+            guard let legs = context.routeLegs, legs.count == max(0, context.waypoints.count - 1) else { return [] }
+            return legs.enumerated().compactMap { index, leg -> (PhotoAssignmentTarget, CLLocationDistance)? in
+                guard !leg.isTransit else { return nil }
+                let from = context.waypoints[index]
+                let to = context.waypoints[index + 1]
+                return (.routeSegment(from: from.id, to: to.id),
+                        distance(from: coordinate, to: leg.coordinates, start: from.coordinate, end: to.coordinate))
             }
+        }
+        if let segment = segments.min(by: { $0.1 < $1.1 }), segment.1 <= routeRadius {
+            return segment.0
         }
 
         guard let nearestWaypoint, nearestWaypoint.1 <= stageRadius,
-              let stage = stages.first(where: { $0.waypoints.contains(nearestWaypoint.0) }) else {
+              let stage = contexts.flatMap(\.stages).first(where: { $0.waypoints.contains(nearestWaypoint.0) }) else {
             return nil
         }
         return .stage(stage.id)

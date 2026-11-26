@@ -1,8 +1,8 @@
 # RoadTripAssist – Implementierungsplan
 
-**Aktueller Stand (24. November 2026):** Phasen 0–4 sind für den Prototyp funktional abgeschlossen. Etappen, Fotoverwaltung, Budget- und Übernachtungssuche, Wegpunktkategorien, einklappbare Wegpunkt- und Etappenbudget-Editoren sowie die UI-Zwischenphase sind umgesetzt. Die zuletzt ausgewählte Reise wird beim Start wiederhergestellt. Optional kann ein Reisestart mit Datum und Uhrzeit festgelegt werden. Die Routenberechnung aktualisiert die aktuelle Reihenfolge inkrementell; Optimierung und Anzeige alternativer Verbindungen werden separat ausgelöst. Der letzte vollständige Swift-Testlauf umfasste 65 Tests ohne Fehler; drei optionale Live-MapKit-Tests wurden übersprungen. Die UI-Suite enthält 19 Tests; im letzten Gesamtlauf bestanden 17, ein optionaler Apple-Maps-Smoke-Test wurde übersprungen und ein Test scheiterte beim App-Start durch LaunchServices. Der fehlgeschlagene Test bestand anschließend im gezielten Wiederholungslauf; der Foto-Popover-Test bestand auch im Gesamtlauf. System-Foto- und Dateidialoge sowie sämtliche Hover-Animationen sind damit nicht vollständig automatisiert abgenommen. Der Screenshotvergleich des Budget-Suchkreises besteht auch mit mehreren Monitoren; Screenshot-Tests positionieren ihr Testfenster dafür auf dem Hauptmonitor. Eine umfassende Sichtprüfung der Darstellung in Hell-/Dunkelmodus, mit Bedienungshilfen und kleinen Fenstern bleibt Teil der Qualitätsrunde in Phase 6.
+**Aktueller Stand:** Phasen 0–5 sind für den Prototyp funktional umgesetzt. Etappen, Fotoverwaltung, Budget- und Übernachtungssuche, Wegpunktkategorien, Fußmodus, Rundtouren und ÖPNV-Schätzungen sowie die UI-Zwischenphase sind vorhanden. Unterkunftstouren werden unabhängig von der Hauptreise gespeichert und berechnet; eigenständige Rundtouren haben genau eine Etappe. Die zuletzt ausgewählte Reise und das optionale Reisestartdatum werden wiederhergestellt. Die Routenberechnung aktualisiert die aktuelle Reihenfolge inkrementell; Optimierung und Anzeige alternativer Verbindungen werden separat ausgelöst. Der letzte vollständige Swift-Testlauf umfasste 101 Tests ohne Fehler; vier optionale Live-MapKit-Tests wurden übersprungen. Die vollständige UI-Suite umfasste 26 Tests ohne Fehler; der optionale Apple-Karten-Smoke-Test wurde übersprungen. System-Foto- und Dateidialoge sowie sämtliche Hover-Animationen sind nicht vollständig automatisiert abgenommen. Screenshot-Tests positionieren ihr Testfenster auf dem Hauptmonitor. Eine umfassende Sichtprüfung der Darstellung in Hell-/Dunkelmodus, mit Bedienungshilfen und kleinen Fenstern bleibt Teil der Qualitätsrunde in Phase 7.
 
-**Als Nächstes:** Phase 5 – Offline-HTML-Export. Der Google-/Mapbox-Livevergleich bleibt für Phase 7 vorgesehen; die Untersuchung und eine mögliche Google-Implementierung folgen am Ende in Phase PI. Vor Veröffentlichung bleibt die Prüfung der Apple-Vorgaben für alternative Routenanfragen und den Cache offen.
+**Als Nächstes:** Phase 6 – Offline-Export. Der Google-/Mapbox-Livevergleich folgt in Phase 8; die Untersuchung und eine mögliche Google-Implementierung folgen am Ende in Phase PI. Vor Veröffentlichung bleibt die Prüfung der Apple-Vorgaben für alternative Routenanfragen und den Cache offen.
 
 **UI-Zwischenphase:** Die Mindestversion ist auf macOS 27 angehoben. Die App
 verwendet ein natives Split-View-Fenster mit größenveränderlicher Reiseseitenleiste
@@ -36,7 +36,7 @@ Kartenanzeige, POI-Suche, Routenermittlung und Reihenfolgeoptimierung sind verwa
 
 ### Vorläufige Empfehlung
 
-Der Prototyp verwendet **MapKit für Karte, Suche, POI-Auswahl und Fahrzeiten**. Die Optimierung berechnet die Reihenfolge lokal. In Phase 7 werden Google Routes und Mapbox mit denselben Beispieldaten verglichen; Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbedingungen bestimmen die spätere Anbieterwahl.
+Der Prototyp verwendet **MapKit für Karte, Suche, POI-Auswahl und Fahrzeiten**. Die Optimierung berechnet die Reihenfolge lokal. In Phase 8 werden Google Routes und Mapbox mit denselben Beispieldaten verglichen; Routengüte, Anfragelimits, Preis, Datenschutz und Nutzungsbedingungen bestimmen die spätere Anbieterwahl.
 
 **Wichtige Trennung:** „lokal“ beschreibt hier zunächst die Speicherung. Karten- und Routinganfragen benötigen Internet und übertragen Ortskoordinaten an den jeweiligen Anbieter. Falls auch Ortsdaten strikt auf dem Gerät bleiben müssen, ist das eine zusätzliche Anforderung und schränkt die praktikablen Routingoptionen ein.
 
@@ -74,6 +74,7 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - XCUITest prüft auch Treffer und Klicks ohne Treffer in der echten Kartenansicht mit simulierten Suchergebnissen, die Ortsdetails und das Einfügen erst nach Bestätigung. Ein separater MapKit-Livetest prüft, ob die Umgebungssuche Unbound Coffee in Innsbruck liefert.
 - Die Übergabedaten für Zwischenziel und Ziel werden geprüft; der optionale Smoke-Test prüft zusätzlich, dass Apple Karten tatsächlich ein Fenster öffnet. Es wird nicht die gesamte Reise übergeben.
 - Die Etappentests prüfen direktes Hinzufügen einer Übernachtung von der Karte, Teilen und Zusammenführen von Etappen, Abbrechen und Bestätigen beim Entfernen, aktualisierte Etappenzeit nach einer Verweilzeitänderung sowie Bestätigen und Widerrufen einer Budgetüberschreitung.
+- Rundtourtests prüfen getrennte Planung und Berechnung, unvollständige und vollständige Gesamtwerte, mehrere Touren pro Unterkunft, Umwandlung und atomare Migration einschließlich Foto- und ÖPNV-Zuordnungen. UI-Tests prüfen die Tourkarte, Fußmodus und ÖPNV-Übergabe, Auswählen der Hauptreise oder einer bestimmten Tour für Karten-POIs, kontextbezogene Duplikatsperren und Wiederöffnen. Auch Ortsfeld, Kategorie, Verweilzeit und Schutz ungespeicherter Tourdetails werden geprüft.
 - Die Fototests prüfen das Auslesen von EXIF-Aufnahmezeit und GPS-Koordinaten samt Zeitzonenoffset, die Vorschläge für Wegpunkt, Streckenabschnitt und Etappe, das lokale Kopieren, Speichern, Wiederöffnen und Löschen von Fotos, persistente Drehungen in beide Richtungen, das Hinzufügen eines Foto-Orts als Foto-Wegpunkt samt lila/grüner Farbregel sowie die Abwärtskompatibilität älterer Daten. Ein UI-Test prüft den Zugang zur Fotoverwaltung einer ausgewählten Reise.
 - Gezielt geprüft werden das Anzeigen und Bearbeiten von Kategorie und Verweilzeit in einer Routenkarte und in der Etappenliste, das Aufklappen und Speichern von Wegpunktdetails und Etappenbudget, die Warnung vor dem Verwerfen ungespeicherter Änderungen, ungültige Budgets, die Übernahme des Standardbudgets, das Wiederöffnen gespeicherter Werte und die Zuordnung eines Budgets bei geteilten Etappen. Die Routensteuerung wird auf kompakte Höhe sowie Vorschlagsdetails und das Ein- und Ausblenden alternativer Verbindungen geprüft.
 - Weitere gezielte Tests prüfen das Aus- und Einblenden des Routeninspektors, das Speichern, Wiederöffnen und Entfernen einer Wegpunktkategorie sowie die Farb- und Symbolpriorität einschließlich Start, Ziel und Übernachtung. Letztere wird in der Darstellungslogik geprüft; eine visuelle Prüfung sämtlicher Kartenmarker ist nicht automatisiert.
@@ -98,7 +99,6 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - Reiseablauf mit Überspringen, Notizen und Bewertungen.
 
 ### Weitere Ausbaustufen – offen
-- Fotoimport, GPS-Zuordnung mit Bestätigung und lokale Medienverwaltung.
 - Offline-HTML-Reisetagebuch mit Übersichts- und Etappenseiten.
 
 **Optimierungsregeln im Prototyp:** Ohne Übernachtungsanker sind alle Zwischenstopps frei umsortierbar. Markierte Übernachtungen bilden feste Etappengrenzen; die Optimierung sortiert nur zwischen diesen Ankern. Öffnungszeiten, Zeitfenster und Prioritäten fließen nicht ein. Das Zeitbudget ist ein Planungshinweis, keine Nebenbedingung des Optimierers. Vorschläge bleiben überprüfbar und manuell änderbar.
@@ -137,7 +137,7 @@ Der gerichtete Teilstrecken-Cache lebt nur im Speicher und hat keine Ablaufzeit;
 - Kleine native SwiftUI-/MapKit-Mac-App: Karte, Suche, POI-Auswahl, Route, Apple-Maps-Übergabe.
 - Testmenge von Beispielreisen mit wenigen und mehreren Zwischenstopps erstellen.
 - MapKit-Paaranfragen samt benötigter Anfragezahl/Drosselung messen.
-- Den dokumentationsbasierten Anbietervergleich festhalten; den praktischen Vergleich auf Phase 7 verschieben.
+- Den dokumentationsbasierten Anbietervergleich festhalten; den praktischen Vergleich auf Phase 8 verschieben.
 
 **Ergebnis:** MapKit-Prototyp und Messungen mit Beispieldaten; eine endgültige Anbieterentscheidung steht aus. Die Apple-Vorgaben zur Verwendung der Alternativanfragen sind vor Veröffentlichung zu klären.
 
@@ -179,27 +179,35 @@ Der gerichtete Teilstrecken-Cache lebt nur im Speicher und hat keine Ablaufzeit;
 - EXIF-Aufnahmezeit einschließlich vorhandenem Zeitzonenoffset und GPS-Koordinaten werden lokal ausgelesen. GPS schlägt zuerst einen Wegpunkt im Umkreis von 2 km, dann einen Streckenabschnitt im Umkreis von 2 km und sonst eine Etappe vor, wenn der nächste Wegpunkt höchstens 20 km entfernt ist. Ohne GPS gibt es keinen automatischen Vorschlag.
 - Fotos mit GPS-Daten erscheinen auf der Routenkarte und in der Fotoverwaltung als kleine Karten-Thumbnails. Liegt ein Foto höchstens 25 m von einem Wegpunkt entfernt, bewegt es sich beim Überfahren animiert zur Seite; der Wegpunkt behält seinen Standardmarker und seine Position. Eine Linie zeigt zurück zum Wegpunkt. Ein Klick öffnet eine größere Vorschau mit Bildbeschreibung, Wegpunkt-Aktion und bestätigungspflichtiger Löschfunktion; die symbolischen Drehfunktionen erscheinen nur beim Überfahren der oberen Bildecken. In der Fotoverwaltung lässt sich zusätzlich der Marker fokussieren. Drehungen werden als Vierteldrehungen mit dem Fotodatensatz gespeichert und verändern die Originalkopie nicht. Bei gesetztem Start und Ziel kann der Foto-Ort als Zwischenziel hinzugefügt werden; ein vorhandener Wegpunkt innerhalb von 50 m wird wiederverwendet und das Foto diesem Wegpunkt bestätigt zugeordnet.
 - Vorschläge bleiben unbestätigt, bis „Übernehmen“ gewählt wird. Die Zuordnung kann stattdessen manuell einer Etappe, einem Wegpunkt oder einem Streckenabschnitt zugewiesen oder aufgehoben werden. Bildbeschreibungen, Aufnahmedaten, Koordinaten und bestätigte Zuordnungen werden lokal mit der Reise gespeichert.
-- Die Bilddatei einschließlich ihrer ursprünglichen EXIF-Daten bleibt lokal. Wird ein Foto-Ort als Wegpunkt verwendet und Routing aktiviert, werden seine Koordinaten für die Routenanfrage an Apple übertragen; auch die Kartenanzeige verwendet Apple MapKit. Der Offline-Export folgt in Phase 5 und muss GPS-/EXIF-Koordinaten standardmäßig entfernen.
+- Die Bilddatei einschließlich ihrer ursprünglichen EXIF-Daten bleibt lokal. Wird ein Foto-Ort als Wegpunkt verwendet und Routing aktiviert, werden seine Koordinaten für die Routenanfrage an Apple übertragen; auch die Kartenanzeige verwendet Apple MapKit. Der Offline-Export folgt in Phase 6 und muss GPS-/EXIF-Koordinaten standardmäßig entfernen.
 
-### Phase 5 – Offline-HTML-Export
+### Phase 5 – Fußmodus und Rundtouren (funktional abgeschlossen)
+- Start-Ziel-Reisen und einteilige eigenständige Rundtouren; mehrere getrennt gespeicherte und berechnete Unterkunftstouren können an einem Übernachtungsort eingefügt und inline bearbeitet werden. Eine Gesamtsumme erscheint nur bei vollständiger Berechnung. Ältere Touren werden atomar migriert; bei uneindeutigen Daten wird nichts überschrieben.
+- Karten-POIs können unabhängig von der aktuellen Kartenansicht zur Hauptreise oder zu einer ausgewählten Unterkunftstour hinzugefügt werden. Bei mehreren Touren wird die gewünschte Tour ausgewählt; Duplikate werden je Kontext geprüft. Die Tour-Wegpunkte zeigen Ortsfeld, Kategorie und Verweilzeit wie in der Hauptreise.
+- Fahren oder Zu Fuß pro Etappe wählen. Bestehende Reisen bleiben im Fahrmodus lesbar. Funktionen für Wegpunkte, Optimierung, Budgets, Verlauf und Fotos bleiben erhalten.
+- In Fußetappen lassen sich gerichtete Legs als ÖPNV markieren. MapKit unterstützt dafür nur eine Ankunftszeitschätzung, keine ÖPNV-Routengeometrie. Die App zeigt eine gekennzeichnete gepunktete Luftlinie; die Detailplanung öffnet Apple Karten mit dem Ziel im ÖPNV-Modus.
+- Die Reihenfolgeoptimierung berücksichtigt ÖPNV nur für markierte gerichtete Nachbarpaare; beim Umordnen entfallende Markierungen werden nach Hinweis entfernt. Beim Wechsel auf Fahren bleiben sie für einen möglichen Rückwechsel gespeichert, solange die Punkte benachbart bleiben.
+- Für alle Legs gilt weiterhin das gleiche optionale Reisestartdatum; ÖPNV-Zeiten sind nicht zu einem Fahrplan abgestimmt. Fehlende Zeiten und Geometrien werden nicht erfunden.
+
+### Phase 6 – Offline-HTML-Export
 - Exportstruktur erzeugen: `index.html` als Reiseübersicht, Unterseite je Etappe sowie lokaler `media/`-Ordner.
 - CSS, JavaScript, Bilder und Kartenansicht lokal ausliefern; keine externen Schrift-, Kartenkachel-, Skript- oder Bild-URLs.
 - Für Offline-Karte eine statische lokale Routendarstellung (z. B. generierte SVG/PNG-Karte) verwenden; keine interaktive Karte voraussetzen, die online Tiles nachlädt.
 - Export im Finder/Browser ohne Netz testen und auf fehlende Medien verweisen.
 
-### Phase 6 – Qualitäts- und Datenschutzrunde
+### Phase 7 – Qualitäts- und Datenschutzrunde
 - Tests für Trip-Persistenz, Stoppreihenfolge, Optimierungsintegration, Zeitrechnung, Medienzuordnung und Offline-Export.
 - Providerfehler, API-Limits, leere Suchergebnisse und fehlende Berechtigungen sichtbar und handhabbar machen.
 - Hinweise/Dokumentation zu Netzwerkübertragung von Such- und Routendaten, lokaler Fotokopie und Exportmetadaten.
 - Die modernisierte Oberfläche einschließlich Marker, Liquid Glass, Hell-/Dunkelmodus, Bedienungshilfen und kleiner Fenster visuell prüfen.
 
-### Phase 7 – Praktischer Vergleich externer Routinganbieter
+### Phase 8 – Praktischer Vergleich externer Routinganbieter
 - Google Routes und Mapbox mit denselben öffentlichen Beispielreisen hinsichtlich Reihenfolge, Fahrzeit, Grenzen, Kostenmodell, Datenschutz und Kartenbedingungen vergleichen.
 - Ergebnis und Empfehlung für einen Routinganbieter oder MapKit plus externen Optimierungsdienst festhalten. Produktive Standortdaten erst nach gesonderter Bewertung an einen externen Anbieter übertragen.
 
 ### Phase PI – Untersuchung und mögliche Google-Implementierung
 
-**Ziel und Grenzen:** Nach Phase 7 dokumentationsbasiert untersuchen, wie ein späterer Umschalter Karte, Orts- und POI-Suche sowie Routing gemeinsam zwischen Apple und Google wechseln könnte. Apple bleibt ohne Google-Konfiguration nutzbar. Bestehende Reisen sollen erhalten bleiben; Anbieterinhalte müssen dabei regelkonform behandelt und gegebenenfalls erneut zugeordnet werden. Die Untersuchung selbst implementiert keine App-Funktion und umfasst weder Live-Prototyp noch kostenpflichtige API-Anfragen oder die Übermittlung von Reisedaten. Eine mögliche Umsetzung folgt erst nach Untersuchung, Anbietervergleich und gesonderter Entscheidung.
+**Ziel und Grenzen:** Nach Phase 8 dokumentationsbasiert untersuchen, wie ein späterer Umschalter Karte, Orts- und POI-Suche sowie Routing gemeinsam zwischen Apple und Google wechseln könnte. Apple bleibt ohne Google-Konfiguration nutzbar. Bestehende Reisen sollen erhalten bleiben; Anbieterinhalte müssen dabei regelkonform behandelt und gegebenenfalls erneut zugeordnet werden. Die Untersuchung selbst implementiert keine App-Funktion und umfasst weder Live-Prototyp noch kostenpflichtige API-Anfragen oder die Übermittlung von Reisedaten. Eine mögliche Umsetzung folgt erst nach Untersuchung, Anbietervergleich und gesonderter Entscheidung.
 
 **Ausgangslage**
 - Die Kartenansicht und Klickumrechnung verwenden direkt SwiftUI `Map` und `MapReader`. Ein Klick startet eine MapKit-Umgebungssuche mit höchstens 60 m Radius; der nächstgelegene Treffer wird zur Bestätigung gezeigt, nicht zwingend das tatsächlich angeklickte Kartensymbol. Die Ansicht zeigt Route oder ausgewählte Etappe, Wegpunkt- und Suchmarker sowie den ungefüllten 5-km-Übernachtungssuchkreis.
@@ -237,7 +245,7 @@ Der gerichtete Teilstrecken-Cache lebt nur im Speicher und hat keine Ablaufzeit;
 
 ## 6. Datenmodell
 
-**Implementiert:** `RoadTrip` speichert ID, Name, Beschreibung, den optionalen Reisestart als absoluten Zeitpunkt, Wegpunkte und Fotometadaten. `TripWaypoints` enthält Start, geordnete Zwischenziele, Ziel, die manuelle Sortiereinstellung und das Standard-Zeitbudget. `RoadStop` speichert ID, Name, Untertitel und Koordinaten. Pro Wegpunkt-ID hält `WaypointDetails` die optionale Kategorie, Verweilzeit, Notiz, Bewertung, Besuchsstatus, Übernachtungskennzeichen, Etappenbudget und eine optionale Bestätigung der Budgetüberschreitung fest. `TripPhoto` speichert die lokale Medien-ID/Dateiendung, den ursprünglichen Dateinamen, Aufnahmedatum, optionale GPS-Koordinaten, Bildbeschreibung, Vierteldrehungen und Zuordnung. Bilddateien liegen separat unter dem app-eigenen Medienordner; `PhotoAssignment` enthält Ziel und Status (Vorschlag/bestätigt). Budgets und Verweilzeiten werden als Minuten gespeichert; eine Bestätigung enthält die geordneten Wegpunkt-IDs, das Budget und die bestätigte Ankunftsminute. Etappen, Suchpunkte und Fotozuordnungsvorschläge werden daraus und aus der aktuellen Straßenvorschau abgeleitet. Berechnete Routen und der MapKit-Opt-in werden nicht gespeichert. Ältere Reisen ohne Reisestart, Kategorie oder Fotofeld bleiben lesbar.
+**Implementiert:** `RoadTrip` speichert ID, Name, Beschreibung, den optionalen Reisestart als absoluten Zeitpunkt, Wegpunkte, Fotometadaten und gegebenenfalls Migrationshinweise. `TripWaypoints` enthält Start, geordnete Zwischenziele, Ziel, die manuelle Sortiereinstellung, das Standard-Zeitbudget, Etappenmodi und gerichtete ÖPNV-Markierungen. Eine Unterkunftstour besitzt eine eigene stabile ID, eine Referenz auf die Unterkunft und eigene `TripWaypoints` mit separaten Start- und Rückkehr-IDs. `RoadStop` speichert ID, Name, Untertitel und Koordinaten. Pro Wegpunkt-ID hält `WaypointDetails` die optionale Kategorie, Verweilzeit, Notiz, Bewertung, Besuchsstatus, Übernachtungskennzeichen, Etappenbudget und eine optionale Bestätigung der Budgetüberschreitung fest. `TripPhoto` speichert die lokale Medien-ID/Dateiendung, den ursprünglichen Dateinamen, Aufnahmedatum, optionale GPS-Koordinaten, Bildbeschreibung, Vierteldrehungen und Zuordnung. Bilddateien liegen separat unter dem app-eigenen Medienordner; `PhotoAssignment` enthält Ziel und Status (Vorschlag/bestätigt). Budgets und Verweilzeiten werden als Minuten gespeichert; eine Bestätigung enthält die geordneten Wegpunkt-IDs, das Budget und die bestätigte Ankunftsminute. Etappen, Suchpunkte und Fotozuordnungsvorschläge werden daraus und aus den jeweiligen aktuellen Routen abgeleitet. Berechnete Routen und der MapKit-Opt-in werden nicht gespeichert. Ältere Reisen ohne Reisestart, Kategorie oder Fotofeld bleiben lesbar; alte Rundtourstrukturen werden bei eindeutiger Zuordnung atomar migriert.
 
 **Entwurf für die weitere Entwicklung (keine Beschreibung des aktuellen JSON-Formats):**
 
@@ -264,4 +272,5 @@ Der gerichtete Teilstrecken-Cache lebt nur im Speicher und hat keine Ablaufzeit;
 - Karte, Routenliste und an Apple Maps übergebenes Ziel sind konsistent.
 - Etappen lassen sich separat anzeigen, summieren Fahr- und Verweilzeit ohne Doppelzählung und behalten ihre Grenzen bei der Optimierung. Das nächste offene Ziel berücksichtigt besuchte und übersprungene Wegpunkte.
 - Änderungen an Verweilzeiten aktualisieren die Etappenzeit direkt. Ein Budgetpunkt lässt sich bei späterer Übernachtungsankunft nach Bestätigung ausblenden und wieder einblenden, ohne Route oder Warnung zu verändern.
-- **Phase 5 (offen):** Ein Export enthält Übersicht, Etappenseiten und Medien und lässt sich ohne Internetverbindung öffnen.
+- **Phase 5 (funktional abgeschlossen):** Fahr- und Fußetappen sowie eigenständige und eingefügte Rundtouren sind lokal speicherbar; ÖPNV-Verbindungen zeigen Schätzungen und schematische Linien und öffnen die Detailplanung in Apple Karten.
+- **Phase 6 (offen):** Ein Export enthält Übersicht, Etappenseiten und Medien und lässt sich ohne Internetverbindung öffnen.

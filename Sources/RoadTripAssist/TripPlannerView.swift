@@ -73,12 +73,17 @@ private struct TripWorkspaceView: View {
     @State private var tripToDelete: RoadTrip?
     @State private var showStages = false
     @State private var mapStageID: RoadStop.ID?
+    @State private var mapTourID: UUID?
     @State private var showSuggestionOnMap = false
     @State private var showAlternativeConnections = false
     @State private var selectedAlternativeConnection: RouteConnection.ID?
     @State private var showAlternativePopover = false
     @State private var showSuggestionPopover = false
+    @State private var showTransitSuggestionConfirmation = false
+    @State private var pendingTransitChange: (() -> Void)?
+    @State private var transitChangeMessage = ""
     @State private var waypointEditor: WaypointEditorDraft?
+    @State private var tourEditor: WaypointEditorDraft?
     @State private var pendingWaypointAction: WaypointEditorAction?
     @State private var showDiscardWaypointChanges = false
     @State private var showDefaultBudget = false
@@ -91,6 +96,10 @@ private struct TripWorkspaceView: View {
     private var mapStage: TripStage? {
         guard let mapStageID else { return nil }
         return model.stages.first { $0.id == mapStageID }
+    }
+
+    private var activeMapModel: TripPlannerViewModel {
+        mapTourID.flatMap { model.tourPlanners[$0] } ?? model
     }
 
     private var availableAlternativeConnections: [RouteConnection] {
@@ -136,11 +145,13 @@ private struct TripWorkspaceView: View {
             }
         }
         .frame(minWidth: 1000, minHeight: 650)
+        .modifier(TransitChangeConfirmation(action: $pendingTransitChange, message: transitChangeMessage))
         .onChange(of: library.selectedID) { _, _ in
             focusedWaypoint = nil
             clearMapPOI()
             showStages = false
             mapStageID = nil
+            mapTourID = nil
             showSuggestionOnMap = false
             showAlternativeConnections = false
             selectedAlternativeConnection = nil
@@ -148,6 +159,7 @@ private struct TripWorkspaceView: View {
             showAlternativePopover = false
             showSuggestionPopover = false
             waypointEditor = nil
+            tourEditor = nil
             overrunStage = nil
             stageStopToRemove = nil
             if fixturePOI == nil { cameraPosition = .automatic }
@@ -167,7 +179,7 @@ private struct TripWorkspaceView: View {
             }
         }
         .onChange(of: model.routeStatus) { _, status in
-            if status != .failed { showRoutingDiagnostics = false }
+            if status == .finished || status == .idle { showRoutingDiagnostics = false }
         }
         .onChange(of: availableAlternativeConnections.map(\.id)) { _, ids in
             if let selectedAlternativeConnection, !ids.contains(selectedAlternativeConnection) {
@@ -179,8 +191,9 @@ private struct TripWorkspaceView: View {
             }
         }
         .sheet(item: $editor) { draft in
-            TripEditorView(draft: draft) { name, notes, departureDate in
-                library.updateTrip(id: draft.tripID, name: name, notes: notes, departureDate: departureDate)
+            TripEditorView(draft: draft) { name, notes, departureDate, isRoundTrip in
+                library.updateTrip(id: draft.tripID, name: name, notes: notes, departureDate: departureDate,
+                                   isRoundTrip: isRoundTrip)
                 editor = nil
             }
         }
@@ -202,7 +215,7 @@ private struct TripWorkspaceView: View {
             Button("Löschen", role: .destructive) { library.delete(trip.id) }
             Button("Abbrechen", role: .cancel) {}
         } message: { trip in
-            if waypointEditor?.hasChanges == true && trip.id == library.selectedID {
+            if (waypointEditor?.hasChanges == true || tourEditor?.hasChanges == true) && trip.id == library.selectedID {
                 Text("„\(trip.name)“ und ihre Wegpunkte werden gelöscht. Ungespeicherte Änderungen gehen verloren.")
             } else {
                 Text("„\(trip.name)“ und ihre Wegpunkte werden von diesem Mac gelöscht.")
@@ -215,17 +228,17 @@ private struct TripWorkspaceView: View {
             }
             Button("Weiter bearbeiten", role: .cancel) { pendingWaypointAction = nil }
         } message: {
-            Text(waypointEditor?.isStageBudget == true
+            Text((waypointEditor ?? tourEditor)?.isStageBudget == true
                  ? "Das Etappenbudget wurde noch nicht gespeichert."
                  : "Die Änderungen an diesem Wegpunkt wurden noch nicht gespeichert.")
         }
-        .alert("Fahrzeit mit Apple MapKit berechnen?", isPresented: $showRoutingConfirmation) {
+        .alert("Reisezeit mit Apple MapKit berechnen?", isPresented: $showRoutingConfirmation) {
             Button("Abbrechen", role: .cancel) {}
             Button("Aktivieren") {
                 model.enableAutomaticRouting()
             }
         } message: {
-            Text("Nach Änderungen an den Wegpunkten berechnet MapKit automatisch die Straßenroute in der aktuellen Reihenfolge. Eine Optimierung weiterer Reihenfolgen startest du separat. Dabei werden Koordinaten und ein gegebenenfalls festgelegter Reisestart an Apple gesendet. Du kannst die Berechnung jederzeit pausieren.")
+            Text("Nach Änderungen an den Wegpunkten berechnet MapKit die Route in der aktuellen Reihenfolge. ÖPNV-Abschnitte liefern nur eine Zeit- und Entfernungsschätzung. Die Optimierung startest du separat. Dabei werden Koordinaten und ein gegebenenfalls festgelegter Reisestart an Apple gesendet. Du kannst die Berechnung jederzeit pausieren.")
         }
         .alert("Apple Karten konnte nicht geöffnet werden", isPresented: $showMapsError) {
             Button("OK", role: .cancel) {}
@@ -242,7 +255,9 @@ private struct TripWorkspaceView: View {
             }
             Button("Abbrechen", role: .cancel) {}
         } message: { stop in
-            if waypointEditor?.id == stop.id && waypointEditor?.hasChanges == true
+            if !model.transitLegs.isEmpty {
+                Text("„\(stop.name)“ wird entfernt. Nicht mehr benachbarte ÖPNV-Markierungen werden entfernt; bei Übernachtungen werden Etappen zusammengeführt. Ungespeicherte Änderungen gehen verloren.")
+            } else if waypointEditor?.id == stop.id && waypointEditor?.hasChanges == true
                 && model.waypointDetails(for: stop).overnight {
                 Text("„\(stop.name)“ wird entfernt und die angrenzenden Etappen werden zusammengeführt. Ungespeicherte Änderungen gehen verloren.")
             } else if waypointEditor?.id == stop.id && waypointEditor?.hasChanges == true {
@@ -315,7 +330,7 @@ private struct TripWorkspaceView: View {
                         .lineLimit(4)
                 }
                 HStack {
-                    Button("Bearbeiten") { editor = TripEditorDraft(trip: trip) }
+                    Button("Bearbeiten") { requestWaypointAction(.editTrip(trip)) }
                     Button("Löschen", role: .destructive) { tripToDelete = trip }
                 }
                 Button("Fotos verwalten", systemImage: "photo.on.rectangle") {
@@ -344,28 +359,71 @@ private struct TripWorkspaceView: View {
 
     private var mapView: some View {
         let stage = mapStage
-        let waypoints = stage?.waypoints ?? model.orderedWaypoints
+        let mapModel = mapTourID.flatMap { model.tourPlanners[$0] } ?? model
+        let waypoints = mapWaypoints(stage?.waypoints ?? mapModel.orderedWaypoints)
         let trip = library.selectedTrip
         let photosByWaypoint = overlappingPhotosByWaypoint(waypoints: waypoints, photos: trip?.photos ?? [])
         let clusteredPhotoIDs = Set(photosByWaypoint.values.flatMap { $0.map(\.id) })
-        let visibleStages = showStages && !showSuggestionOnMap ? (stage.map { [$0] } ?? model.stages) : []
+        let visibleStages = (showStages || mapTourID != nil) && !showSuggestionOnMap
+            ? (stage.map { [$0] } ?? mapModel.stages) : []
         return MapReader { proxy in
             Map(position: $cameraPosition) {
-                let coordinates = stage?.coordinates
-                    ?? (showSuggestionOnMap ? model.suggestion?.coordinates : model.roadPreview?.coordinates)
-                    ?? []
-                if coordinates.count >= 2 {
-                    MapPolyline(coordinates: coordinates)
-                        .stroke(.blue, lineWidth: 4)
+                let route = showSuggestionOnMap ? mapModel.suggestion : mapModel.roadPreview
+                let routeWaypoints = stage?.waypoints
+                    ?? ([mapModel.start].compactMap { $0 } + (route?.orderedStops ?? []) + [mapModel.destination].compactMap { $0 })
+                let routeLegs = stage?.legs ?? route?.legs ?? []
+                ForEach(Array(routeLegs.enumerated()), id: \.offset) { index, leg in
+                    if showSuggestionOnMap && leg.isTransit && index + 1 < routeWaypoints.count {
+                        MapPolyline(coordinates: [routeWaypoints[index].coordinate, routeWaypoints[index + 1].coordinate])
+                            .stroke(.blue, style: StrokeStyle(lineWidth: 4, dash: [2, 6]))
+                    } else if !leg.isTransit && leg.coordinates.count >= 2 {
+                        MapPolyline(coordinates: leg.coordinates)
+                            .stroke(.blue, lineWidth: 4)
+                    }
                 }
-                if model.roadPreview == nil && !showSuggestionOnMap {
-                    let visibleIDs = Set(waypoints.map(\.id))
-                    ForEach(model.currentConnections.filter {
+                if !showSuggestionOnMap {
+                    let ordered = stage?.waypoints ?? mapModel.orderedWaypoints
+                    ForEach(Array(zip(ordered, ordered.dropFirst()).enumerated()), id: \.offset) { _, pair in
+                        let (from, to) = pair
+                        if mapModel.mode(from: from, to: to) == .walking && mapModel.isTransit(from: from, to: to) {
+                            MapPolyline(coordinates: [from.coordinate, to.coordinate])
+                                .stroke(.blue, style: StrokeStyle(lineWidth: 4, dash: [2, 6]))
+                        }
+                    }
+                }
+                if mapModel.roadPreview == nil && !showSuggestionOnMap {
+                    let visibleIDs = Set((stage?.waypoints ?? mapModel.orderedWaypoints).map(\.id))
+                    ForEach(mapModel.currentConnections.filter {
                         visibleIDs.contains($0.from.id) && visibleIDs.contains($0.to.id)
                     }) { connection in
-                        if connection.leg.coordinates.count >= 2 {
+                        if !connection.leg.isTransit && connection.leg.coordinates.count >= 2 {
                             MapPolyline(coordinates: connection.leg.coordinates)
                                 .stroke(.blue, lineWidth: 4)
+                        }
+                        if mapTourID == nil && stage == nil && !showSuggestionOnMap {
+                            ForEach(model.lodgingTours) { tour in
+                                if let planner = model.tourPlanners[tour.id] {
+                                    ForEach(planner.currentConnections) { connection in
+                                        if !connection.leg.isTransit && connection.leg.coordinates.count >= 2 {
+                                            MapPolyline(coordinates: connection.leg.coordinates)
+                                                .stroke(.orange, lineWidth: 4)
+                                        }
+                                    }
+                                    ForEach(Array(zip(planner.orderedWaypoints, planner.orderedWaypoints.dropFirst()).enumerated()),
+                                            id: \.offset) { _, pair in
+                                        let (from, to) = pair
+                                        if planner.mode(from: from, to: to) == .walking && planner.isTransit(from: from, to: to) {
+                                            MapPolyline(coordinates: [from.coordinate, to.coordinate])
+                                                .stroke(.orange, style: StrokeStyle(lineWidth: 4, dash: [2, 6]))
+                                        }
+                                    }
+                                    ForEach(planner.stops) { stop in
+                                        Marker("Rundtour: \(stop.name)", systemImage: "arrow.triangle.2.circlepath",
+                                               coordinate: stop.coordinate)
+                                            .tint(.orange)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -373,7 +431,10 @@ private struct TripWorkspaceView: View {
                     ForEach(availableAlternativeConnections.filter {
                         selectedAlternativeConnection == nil || $0.id == selectedAlternativeConnection
                     }) { connection in
-                        if connection.leg.coordinates.count >= 2 {
+                        if connection.leg.isTransit {
+                            MapPolyline(coordinates: [connection.from.coordinate, connection.to.coordinate])
+                                .stroke(.purple, style: StrokeStyle(lineWidth: 4, dash: [2, 6]))
+                        } else if connection.leg.coordinates.count >= 2 {
                             MapPolyline(coordinates: connection.leg.coordinates)
                                 .stroke(.purple, style: StrokeStyle(lineWidth: 4, dash: [8, 6]))
                         }
@@ -389,7 +450,7 @@ private struct TripWorkspaceView: View {
                     }
                 }
                 ForEach(waypoints) { stop in
-                    let appearance = waypointAppearance(for: stop)
+                    let appearance = waypointAppearance(for: stop, in: mapModel)
                     Marker(stop.name, systemImage: appearance.systemImage, coordinate: stop.coordinate)
                         .tint(appearance.color)
                     if let trip, let photos = photosByWaypoint[stop.id], !photos.isEmpty {
@@ -398,7 +459,7 @@ private struct TripWorkspaceView: View {
                                 waypoint: stop,
                                 photos: photos,
                                 library: library,
-                                model: model,
+                                model: mapModel,
                                 tripID: trip.id,
                                 presentedPhotoID: $presentedMapPhotoID
                             )
@@ -424,7 +485,7 @@ private struct TripWorkspaceView: View {
                                 .accessibilityLabel("Foto auf der Karte: \(photo.caption.isEmpty ? photo.originalName : photo.caption)")
                                 .accessibilityIdentifier("planner-photo-marker-\(photo.id.uuidString)")
                                 .popover(isPresented: photoPopoverBinding(for: photo.id), arrowEdge: .trailing) {
-                                    TripPhotoDetailPopover(library: library, model: model,
+                                    TripPhotoDetailPopover(library: library, model: mapModel,
                                                            tripID: trip.id, photoID: photo.id) {
                                         presentedMapPhotoID = nil
                                     }
@@ -433,15 +494,15 @@ private struct TripWorkspaceView: View {
                         }
                     }
                 }
-                ForEach(model.searchResults.prefix(5)) { result in
+                ForEach(mapModel.searchResults.prefix(5)) { result in
                     Marker(result.name, coordinate: result.coordinate)
                         .tint(.orange)
                 }
-                ForEach(model.parkingSuggestions) { parking in
+                ForEach(mapModel.parkingSuggestions) { parking in
                     Marker(parking.name, systemImage: "parkingsign.circle", coordinate: parking.coordinate)
                         .tint(.orange)
                 }
-                if let selectedPOI, !model.hasMapPlace(selectedPOI.stop) {
+                if let selectedPOI, !mapModel.hasMapPlace(selectedPOI.stop) {
                     Marker(selectedPOI.stop.name, systemImage: "mappin", coordinate: selectedPOI.stop.coordinate)
                         .tint(.blue)
                 }
@@ -501,8 +562,14 @@ private struct TripWorkspaceView: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            if showSuggestionOnMap || showAlternativeConnections {
+            if showSuggestionOnMap || showAlternativeConnections || mapTourID != nil || !model.lodgingTours.isEmpty {
                 VStack(alignment: .leading) {
+                    if mapTourID != nil {
+                        Text("Karte: ausgewählte Rundtour")
+                        Button("Hauptreise und Rundtouren") { showStageOnMap(nil) }
+                    } else if !model.lodgingTours.isEmpty && mapStageID == nil {
+                        Text("Karte: Hauptreise (blau) und Rundtouren (orange)")
+                    }
                     if showSuggestionOnMap {
                         Text("Vorschlag – noch nicht übernommen")
                             .accessibilityIdentifier("map-suggestion-indicator")
@@ -516,7 +583,7 @@ private struct TripWorkspaceView: View {
                 .padding(8)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 .padding(12)
-                .allowsHitTesting(false)
+                .allowsHitTesting(mapTourID != nil)
             }
         }
         .onChange(of: model.roadPreview != nil) { _, hasPreview in
@@ -540,6 +607,14 @@ private struct TripWorkspaceView: View {
     private func poiDetails(_ poi: MapPointOfInterest) -> some View {
         let alreadyInRoute = model.hasMapPlace(poi.stop)
         let canAdd = library.selectedID != nil && model.hasEndpoints && !alreadyInRoute
+        let tours = model.lodgingTours.compactMap { tour -> (tour: LodgingTour, planner: TripPlannerViewModel, title: String)? in
+            guard let planner = model.tourPlanners[tour.id],
+                  let anchor = model.orderedWaypoints.first(where: { $0.id == tour.anchorID }),
+                  let index = model.lodgingTours.filter({ $0.anchorID == tour.anchorID }).firstIndex(where: { $0.id == tour.id }) else {
+                return nil
+            }
+            return (tour, planner, "Rundtour \(index + 1) ab \(anchor.name)")
+        }
         return VStack(alignment: .leading, spacing: 8) {
             Text("Ort in der Nähe des Klicks").foregroundStyle(.secondary)
             HStack(alignment: .top) {
@@ -558,16 +633,40 @@ private struct TripWorkspaceView: View {
                 Link("Website", destination: website)
             }
             VStack(alignment: .leading, spacing: 6) {
-                Button("Zur Route hinzufügen", systemImage: "plus.circle") { model.addMapPOI(poi.stop) }
-                    .accessibilityIdentifier("add-map-poi")
-                Button("Als Übernachtung hinzufügen", systemImage: "bed.double") {
-                    model.addMapPOI(poi.stop, asOvernight: true)
+                Button(tours.isEmpty ? "Zur Route hinzufügen" : "Zur Hauptreise hinzufügen", systemImage: "plus.circle") {
+                    confirmTransitChange(planner: model) { model.addMapPOI(poi.stop.newOccurrence(), stageID: mapStageID) }
+                }
+                .accessibilityIdentifier("add-map-poi")
+                .disabled(!canAdd)
+                if tours.count == 1, let tour = tours.first {
+                    Button("Zur Rundtour hinzufügen", systemImage: "arrow.trianglehead.2.clockwise.rotate.90") {
+                        confirmTransitChange(planner: tour.planner) { tour.planner.addMapPOI(poi.stop.newOccurrence()) }
+                    }
+                    .accessibilityIdentifier("add-map-poi-tour")
+                    .disabled(library.selectedID == nil || !tour.planner.hasEndpoints || tour.planner.hasMapPlace(poi.stop))
+                    Text(tour.planner.hasMapPlace(poi.stop) ? "\(tour.title) – bereits enthalten" : tour.title)
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if !tours.isEmpty {
+                    Menu("Zur Rundtour hinzufügen", systemImage: "arrow.trianglehead.2.clockwise.rotate.90") {
+                        ForEach(tours, id: \.tour.id) { tour in
+                            let alreadyInTour = tour.planner.hasMapPlace(poi.stop)
+                            Button(alreadyInTour ? "\(tour.title) – bereits enthalten" : tour.title) {
+                                confirmTransitChange(planner: tour.planner) { tour.planner.addMapPOI(poi.stop.newOccurrence()) }
+                            }
+                            .disabled(library.selectedID == nil || !tour.planner.hasEndpoints || alreadyInTour)
+                        }
+                    }
+                    .accessibilityIdentifier("add-map-poi-tour")
+                }
+                Button(tours.isEmpty ? "Als Übernachtung hinzufügen" : "Als Übernachtung zur Hauptreise hinzufügen", systemImage: "bed.double") {
+                    confirmTransitChange(planner: model) { model.addMapPOI(poi.stop.newOccurrence(), asOvernight: true, stageID: mapStageID) }
                 }
                 .accessibilityIdentifier("add-map-poi-overnight")
+                .disabled(!canAdd || model.isRoundTrip || (mapStage.map { model.isRoundTripStage($0) } ?? false))
+                .help("In einer Rundtour kann keine zusätzliche Etappengrenze gesetzt werden.")
             }
-            .disabled(!canAdd)
             if alreadyInRoute {
-                Text("Bereits in der Route").foregroundStyle(.secondary)
+                Text(tours.isEmpty ? "Bereits in der Route" : "Bereits in der Hauptreise").foregroundStyle(.secondary)
             } else if library.selectedID == nil || !model.hasEndpoints {
                 Text("Wähle eine Reise mit Start und Ziel.").foregroundStyle(.secondary)
             }
@@ -580,6 +679,17 @@ private struct TripWorkspaceView: View {
 
     private var routeSidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let trip = library.selectedTrip, !trip.migrationNotices.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(trip.migrationNotices, id: \.self) { notice in
+                        Text(notice)
+                    }
+                    Button("Hinweis schließen") { library.dismissMigrationNotices(for: trip.id) }
+                }
+                .font(.caption)
+                .padding(.horizontal)
+                .accessibilityIdentifier("round-trip-migration-notice")
+            }
             VStack(alignment: .leading, spacing: 12) {
                 Text(showStages ? "Etappen & Reiseverlauf" : "Route planen")
                     .font(.title2.bold())
@@ -615,14 +725,32 @@ private struct TripWorkspaceView: View {
 
     private var waypointList: some View {
             List {
+                if model.hasEndpoints {
+                    Section("Routeneinstellungen") {
+                        ForEach(Array(model.stages.enumerated()), id: \.offset) { index, stage in
+                            Picker("\(model.isRoundTripStage(stage) ? "Rundtour" : "Etappe") \(index + 1)",
+                                   selection: Binding(
+                                    get: { model.mode(for: stage) },
+                                    set: { model.setMode($0, for: stage) }
+                                   )) {
+                                ForEach(TravelMode.allCases, id: \.self) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .accessibilityIdentifier("route-stage-mode-\(index + 1)")
+                        }
+                    }
+                }
                 Section("Wegpunkte") {
                     waypointSearch(.start, title: "Start", icon: "play.fill", id: "start")
+                    if let start = model.start { lodgingTourCards(at: start, showAdd: true) }
                     ForEach(Array(model.stops.enumerated()), id: \.element.id) { index, stop in
                         waypointSearch(.stop(stop.id), title: "Zwischenziel \(index + 1)", icon: "mappin",
                                        id: "stop-\(index + 1)") {
                             if focusedWaypoint == .stop(stop.id) { focusedWaypoint = nil }
-                            model.removeStop(stop)
+                            confirmTransitChange { model.removeStop(stop) }
                         }
+                        lodgingTourCards(at: stop, showAdd: true)
                     }
                     if model.searchField == .newStop {
                         waypointSearch(.newStop, title: "Neues Zwischenziel", icon: "mappin", id: "new-stop")
@@ -637,33 +765,88 @@ private struct TripWorkspaceView: View {
                         .buttonStyle(.borderless)
                         .disabled(!model.hasEndpoints)
                     }
-                    waypointSearch(.destination, title: "Ziel", icon: "flag.checkered", id: "destination")
+                    if model.isRoundTrip {
+                        Label("Rückkehr: \(model.destination?.name ?? "Ausgangspunkt wählen")", systemImage: "flag.checkered")
+                    } else {
+                        waypointSearch(.destination, title: "Ziel", icon: "flag.checkered", id: "destination")
+                        if let destination = model.destination { lodgingTourCards(at: destination, showAdd: true) }
+                    }
                     if model.manualOrder {
-                        Button("Nach Luftlinie sortieren", action: model.useProvisionalOrder)
+                        Button("Nach Luftlinie sortieren") { confirmTransitChange { model.useProvisionalOrder() } }
                             .buttonStyle(.borderless)
                     }
                 }
             }
             .listStyle(.inset)
+            .accessibilityIdentifier("route-waypoint-list")
+    }
+
+    @ViewBuilder
+    private func lodgingTourCards(at stop: RoadStop, showAdd: Bool = false) -> some View {
+        let tours = model.lodgingTours.filter { $0.anchorID == stop.id }
+        if showAdd && !model.isRoundTrip && model.waypointDetails(for: stop).overnight {
+            Button("Rundtour hinzufügen", systemImage: "plus.circle") { model.addLodgingTour(at: stop) }
+                .padding(.leading, 14)
+        }
+        ForEach(Array(tours.enumerated()), id: \.element.id) { index, tour in
+            if let planner = model.tourPlanners[tour.id] {
+                LodgingTourCard(model: planner, anchor: stop, number: index + 1, draft: $tourEditor, onMap: {
+                    clearMapPOI()
+                    mapStageID = nil
+                    mapTourID = tour.id
+                    showSuggestionOnMap = false
+                    cameraPosition = .automatic
+                }, onOpenMaps: { stop in
+                    openInMaps(stop, planner: planner)
+                }, onFocus: { stop in
+                    mapTourID = tour.id
+                    mapStageID = nil
+                    showSuggestionOnMap = false
+                    focusWaypoint(on: stop)
+                }, onDelete: {
+                    if mapTourID == tour.id { mapTourID = nil }
+                    if let draft = tourEditor, planner.orderedWaypoints.contains(draft.stop) { tourEditor = nil }
+                    model.removeLodgingTour(tour.id)
+                })
+                .padding(.leading, 14)
+                .disabled(waypointEditor != nil)
+            }
+        }
     }
 
     private var routingControls: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let preview = model.roadPreview {
                 HStack {
-                    Text("Fahrzeit: ca. \(formatDuration(preview.duration))")
+                    Text("\(model.lodgingTours.isEmpty ? "" : "Hauptreise · ")\(model.stageModes.values.contains(.walking) ? "Reisezeit" : "Fahrzeit"): ca. \(formatDuration(preview.duration))")
                     Spacer(minLength: 4)
-                    Text("Strecke: \(formatDistance(preview.distance))")
+                    Text("\(model.hasActiveTransit ? "Strecke ca." : "Strecke"): \(formatDistance(preview.distance))")
                         .accessibilityIdentifier("route-distance")
                 }
             } else if !model.hasEndpoints {
                 Text("Start und Ziel wählen.")
             }
+            if !model.lodgingTours.isEmpty {
+                if let total = model.completeJourneyTotals {
+                    Text("Gesamt inkl. Rundtouren und Aufenthalten: \(formatDuration(total.duration)) · \(formatDistance(total.distance))")
+                        .accessibilityIdentifier("journey-total")
+                } else {
+                    Text("Gesamt inkl. Rundtouren: noch nicht vollständig berechnet")
+                        .accessibilityIdentifier("journey-total-incomplete")
+                }
+            }
             if model.hasEndpoints && !model.stops.isEmpty {
-                Text("\(model.manualOrder ? "Fixiert" : "Luftlinien-Reihenfolge") · \(model.isProvisional ? "nicht optimiert" : "fahrzeitgeprüft")")
+                Text("\(model.manualOrder ? "Fixiert" : "Luftlinien-Reihenfolge") · \(model.isProvisional ? "nicht optimiert" : (model.stageModes.values.contains(.walking) ? "zeitgeprüft" : "fahrzeitgeprüft"))")
                     .foregroundStyle(.secondary)
             }
             routeCalculationStatus
+            if let notice = model.transitNotice {
+                Text(notice).foregroundStyle(.orange)
+            }
+            if model.hasActiveTransit {
+                Text("ÖPNV: gepunktete Luftlinie; Zeit und Strecke sind Schätzungen, kein abgestimmter Fahrplan.")
+                    .foregroundStyle(.secondary)
+            }
             if let proposal = model.suggestion {
                 HStack(spacing: 6) {
                     Text("Vorschlag: ca. \(formatDuration(proposal.duration)) · \(formatDistance(proposal.distance))")
@@ -685,7 +868,11 @@ private struct TripWorkspaceView: View {
                     .help(mapAction)
                     .accessibilityIdentifier("toggle-suggestion-map")
                     Button("Vorschlag übernehmen", systemImage: "checkmark.circle") {
-                        model.acceptSuggestion()
+                        if model.suggestionRemovesTransit {
+                            showTransitSuggestionConfirmation = true
+                        } else {
+                            model.acceptSuggestion()
+                        }
                     }
                     .help("Vorschlag übernehmen")
                 }
@@ -737,6 +924,12 @@ private struct TripWorkspaceView: View {
         .padding(.bottom, 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("routing-controls")
+        .alert("ÖPNV-Markierungen entfernen?", isPresented: $showTransitSuggestionConfirmation) {
+            Button("Vorschlag übernehmen") { model.acceptSuggestion() }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Im Vorschlag sind einige markierte Punkte nicht mehr benachbart. Ihre ÖPNV-Markierungen werden beim Übernehmen entfernt.")
+        }
     }
 
     private var optimizationHelp: String {
@@ -744,7 +937,7 @@ private struct TripWorkspaceView: View {
         if model.stops.isEmpty { return "Für die Optimierung ein Zwischenziel hinzufügen" }
         if !model.automaticRouting { return "Automatische Berechnung für die Optimierung aktivieren" }
         if model.isOptimizing { return "Berechnung läuft" }
-        return "Reihenfolge nach Fahrzeit optimieren"
+        return "Reihenfolge nach Reisezeit optimieren"
     }
 
     private func suggestionDetails(_ proposal: PlannedRoute) -> some View {
@@ -756,9 +949,9 @@ private struct TripWorkspaceView: View {
                     .textSelection(.enabled)
             }
             .frame(maxHeight: 140)
-            Text("Fahrzeit: ca. \(formatDuration(proposal.duration)) · Strecke: \(formatDistance(proposal.distance))")
+            Text("Reisezeit: ca. \(formatDuration(proposal.duration)) · Strecke: \(formatDistance(proposal.distance))")
             if let preview = model.roadPreview {
-                Text("Ca. \(formatDuration(preview.duration - proposal.duration)) weniger Fahrzeit")
+                Text("Ca. \(formatDuration(preview.duration - proposal.duration)) weniger Reisezeit")
             }
         }
         .padding()
@@ -862,10 +1055,39 @@ private struct TripWorkspaceView: View {
                         } header: {
                             Text("Etappenplanung").font(.headline)
                         }
+                        if let start = model.start {
+                            lodgingTourCards(at: start, showAdd: true)
+                        }
                         ForEach(Array(model.stages.enumerated()), id: \.element.id) { index, stage in
                             let placeholder = stage.budgetPlaceholder
                             Section {
                                 stageSummary(stage, number: index + 1)
+                                Picker("Verkehrsmittel", selection: Binding(
+                                    get: { model.mode(for: stage) },
+                                    set: { model.setMode($0, for: stage) }
+                                )) {
+                                    ForEach(TravelMode.allCases, id: \.self) { mode in
+                                        Text(mode.title).tag(mode)
+                                    }
+                                }
+                                .accessibilityIdentifier("stage-mode-\(index + 1)")
+                                HStack {
+                                    if model.isRoundTripStage(stage) {
+                                        Button("Zwischenziel zur Rundtour") {
+                                            showStages = false
+                                            model.beginAddingStop(to: stage)
+                                            focusedWaypoint = .newStop
+                                        }
+                                        .accessibilityIdentifier("round-trip-add-stop-\(index + 1)")
+                                    }
+                                    if model.waypointDetails(for: stage.end).overnight && !model.isRoundTrip {
+                                        Button("Rundtour hinzufügen") {
+                                            model.addLodgingTour(at: stage.end)
+                                        }
+                                        .accessibilityIdentifier("add-round-trip-\(index + 1)")
+                                    }
+                                }
+                                .buttonStyle(.borderless)
                                 if index > 0, let start = stage.waypoints.first {
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text("Abfahrt: \(start.name)")
@@ -877,6 +1099,17 @@ private struct TripWorkspaceView: View {
                                     }
                                 }
                                 ForEach(index == 0 ? stage.waypoints : Array(stage.waypoints.dropFirst())) { stop in
+                                    if let position = stage.waypoints.firstIndex(of: stop), position > 0,
+                                       model.mode(for: stage) == .walking {
+                                        let previous = stage.waypoints[position - 1]
+                                        Toggle("ÖPNV: \(previous.name) → \(stop.name)", isOn: Binding(
+                                            get: { model.isTransit(from: previous, to: stop) },
+                                            set: { model.setTransit($0, from: previous, to: stop) }
+                                        ))
+                                        .accessibilityIdentifier("transit-stage-\(index + 1)-\(position)")
+                                        .disabled(previous.coordinate.latitude == stop.coordinate.latitude
+                                                  && previous.coordinate.longitude == stop.coordinate.longitude)
+                                    }
                                     stageWaypointRow(stop, number: (model.orderedWaypoints.firstIndex(of: stop) ?? 0) + 1)
                                     if let draft = waypointEditor, draft.id == stop.id, !draft.isStageBudget {
                                         waypointDetailsEditor(draft)
@@ -897,7 +1130,7 @@ private struct TripWorkspaceView: View {
                                         requestWaypointAction(expanded ? .close : .openStageBudget(stage.end))
                                     } label: {
                                         HStack {
-                                            Text("Etappe \(index + 1): \(stage.end.name)")
+                                            Text("\(model.isRoundTripStage(stage) ? "Rundtour" : "Etappe") \(index + 1): \(stage.end.name)")
                                             Spacer()
                                             Image(systemName: expanded ? "chevron.up" : "chevron.down")
                                                 .font(.caption)
@@ -928,6 +1161,7 @@ private struct TripWorkspaceView: View {
                                     }
                                 }
                             }
+                            lodgingTourCards(at: stage.end)
                         }
                     } else {
                         Text("Wähle Start und Ziel in der Routenansicht, um Etappen zu planen.")
@@ -959,11 +1193,11 @@ private struct TripWorkspaceView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Verweilzeit: \(formatDuration(stage.stayMinutes * 60))")
             if let drive = stage.driveDuration, let total = stage.totalDuration {
-                Text("Etappenzeit: \(formatDuration(total)) · davon Fahrt: \(formatDuration(drive))")
+                Text("Etappenzeit: \(formatDuration(total)) · davon \(model.mode(for: stage) == .driving ? "Fahrt" : "unterwegs"): \(formatDuration(drive))")
                     .fontWeight(.semibold)
                     .accessibilityIdentifier("stage-totals-\(number)")
             } else {
-                Text("Etappenzeit: \(formatDuration(stage.stayMinutes * 60)) + ausstehende Fahrzeit")
+                Text("Etappenzeit: \(formatDuration(stage.stayMinutes * 60)) + ausstehende \(model.mode(for: stage) == .driving ? "Fahrzeit" : "Reisezeit")")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("stage-totals-\(number)")
             }
@@ -1052,7 +1286,7 @@ private struct TripWorkspaceView: View {
                 .help(waypointEditor?.id == stop.id
                       ? "Details vor dem Ändern der Übernachtung schließen" : action)
                 .accessibilityIdentifier("toggle-overnight-\(number)")
-                .disabled(waypointEditor?.id == stop.id)
+                .disabled(waypointEditor?.id == stop.id || model.isOvernightLocked(stop))
                 mapsButton(for: stop, id: "open-stage-waypoint-\(number)")
             }
             if stop != model.start && stop != model.destination {
@@ -1063,13 +1297,26 @@ private struct TripWorkspaceView: View {
                 .buttonStyle(.borderless)
                 .help("Zwischenziel entfernen")
                 .accessibilityIdentifier("remove-stage-waypoint-\(number)")
+                .disabled(model.isProtectedRoundTripAnchor(stop))
             }
         }
     }
 
-    private func waypointAppearance(for stop: RoadStop) -> WaypointAppearance {
-        WaypointAppearance(details: model.waypointDetails(for: stop),
-                           isStart: stop == model.start, isDestination: stop == model.destination)
+    private func waypointAppearance(for stop: RoadStop, in planner: TripPlannerViewModel? = nil) -> WaypointAppearance {
+        let planner = planner ?? model
+        return WaypointAppearance(details: planner.waypointDetails(for: stop),
+                                  isStart: stop == planner.start, isDestination: stop == planner.destination)
+    }
+
+    private func mapWaypoints(_ waypoints: [RoadStop]) -> [RoadStop] {
+        var seen = Set<RoadStop.ID>()
+        return waypoints.filter { stop in
+            let planner = activeMapModel
+            let root = planner.roundTripAnchors[stop.id]
+                ?? (planner.isRoundTrip && stop == planner.destination ? planner.start?.id : nil)
+                ?? stop.id
+            return seen.insert(root).inserted
+        }
     }
 
     private func overlappingPhotosByWaypoint(waypoints: [RoadStop],
@@ -1113,7 +1360,7 @@ private struct TripWorkspaceView: View {
     }
 
     private func requestWaypointAction(_ action: WaypointEditorAction) {
-        if waypointEditor?.hasChanges == true {
+        if waypointEditor?.hasChanges == true || tourEditor?.hasChanges == true {
             pendingWaypointAction = action
             showDiscardWaypointChanges = true
         } else {
@@ -1123,12 +1370,14 @@ private struct TripWorkspaceView: View {
 
     private func performWaypointAction(_ action: WaypointEditorAction) {
         waypointEditor = nil
+        tourEditor = nil
         switch action {
         case .close:
             break
         case .open(let stop):
             waypointEditor = WaypointEditorDraft(stop: stop, details: model.waypointDetails(for: stop),
-                                                  isStart: stop == model.start, isDestination: stop == model.destination)
+                                                  isStart: stop == model.start, isDestination: stop == model.destination,
+                                                  protectedOvernight: model.isOvernightLocked(stop))
         case .openStageBudget(let stop):
             waypointEditor = WaypointEditorDraft(stop: stop, details: model.waypointDetails(for: stop),
                                                   isStart: stop == model.start, isDestination: stop == model.destination,
@@ -1137,6 +1386,8 @@ private struct TripWorkspaceView: View {
             library.select(id)
         case .newTrip:
             editor = TripEditorDraft()
+        case .editTrip(let trip):
+            editor = TripEditorDraft(trip: trip)
         case .showRoute:
             showStages = false
         }
@@ -1145,19 +1396,20 @@ private struct TripWorkspaceView: View {
     private func showStageOnMap(_ id: RoadStop.ID?) {
         clearMapPOI()
         mapStageID = id
+        mapTourID = nil
         showSuggestionOnMap = false
         cameraPosition = .automatic
     }
 
-    @ViewBuilder
     private var routeCalculationStatus: some View {
+        VStack(alignment: .leading, spacing: 4) {
         switch model.routeStatus {
         case .idle:
             EmptyView()
         case .preparing:
             ProgressView("Route wird vorbereitet …")
         case let .running(.streetRoute(done, total)):
-            routeStepProgress("Straßenroute", done: done, total: total)
+            routeStepProgress(model.stageModes.values.contains(.walking) ? "Route" : "Straßenroute", done: done, total: total)
         case let .running(.alternativeLegs(done, total)):
             routeStepProgress("Alternative Verbindungen", done: done, total: total)
         case .running(.comparingOrders):
@@ -1166,7 +1418,8 @@ private struct TripWorkspaceView: View {
             if model.suggestion != nil {
                 Label("Vorschlag bereit", systemImage: "checkmark.circle")
             } else if model.stops.isEmpty || model.isProvisional {
-                Label("Straßenroute berechnet", systemImage: "checkmark.circle")
+                Label(model.stageModes.values.contains(.walking) ? "Route berechnet" : "Straßenroute berechnet",
+                      systemImage: "checkmark.circle")
             } else {
                 Label("Reihenfolge nach Fahrzeit geprüft", systemImage: "checkmark.circle")
             }
@@ -1191,39 +1444,51 @@ private struct TripWorkspaceView: View {
             .buttonStyle(.plain)
             .help("Fehlerdiagnose anzeigen")
             .accessibilityIdentifier("routing-diagnostics")
-            .popover(isPresented: $showRoutingDiagnostics, arrowEdge: .trailing) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Routenfehler – Diagnose").font(.headline)
-                    Text("Die Angaben bleiben lokal und können Standortdaten enthalten.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ScrollView {
-                        Text(model.routingDiagnostic ?? "Keine Diagnose verfügbar.")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                            .accessibilityIdentifier("routing-diagnostics-details")
-                    }
-                    Button("Schließen") { showRoutingDiagnostics = false }
-                }
-                .padding()
-                .frame(width: 520, height: 420)
-            }
             ForEach(model.unavailableConnections) { connection in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Ohne Autoroute:").foregroundStyle(.red)
+                    Text("Ohne Verbindung:").foregroundStyle(.red)
                     Button("Von: \(connection.from.name)") { focusWaypoint(on: connection.from) }
                     Button("Nach: \(connection.to.name)") { focusWaypoint(on: connection.to) }
                 }
             }
             Button("Erneut versuchen", action: model.retryRouting)
-            if !model.unavailableConnections.isEmpty {
+            if model.unavailableConnections.contains(where: { model.mode(from: $0.from, to: $0.to) == .driving }) {
                 parkingSuggestions
             }
+        }
+            if model.isOptimizing || model.routeStatus == .paused {
+                Button("Diagnose anzeigen", systemImage: "info.circle") {
+                    showRoutingDiagnostics = true
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("routing-diagnostics")
+            }
+        }
+        .popover(isPresented: $showRoutingDiagnostics, arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Routenberechnung – Diagnose").font(.headline)
+                Text("Die Angaben bleiben lokal und können Standortdaten enthalten.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(model.routingDiagnostic ?? model.liveRoutingDiagnostic(at: context.date))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("routing-diagnostics-details")
+                    }
+                }
+                Button("Schließen") { showRoutingDiagnostics = false }
+            }
+            .padding()
+            .frame(width: 520, height: 420)
         }
     }
 
     private var parkingSuggestions: some View {
-        let affectedIDs = Set(model.unavailableConnections.flatMap { [$0.from.id, $0.to.id] })
+        let affectedIDs = Set(model.unavailableConnections
+            .filter { model.mode(from: $0.from, to: $0.to) == .driving }
+            .flatMap { [$0.from.id, $0.to.id] })
         let affectedWaypoints = model.orderedWaypoints.filter { affectedIDs.contains($0.id) }
         return VStack(alignment: .leading, spacing: 6) {
             Text("Parkplatz in der Nähe suchen").fontWeight(.semibold)
@@ -1303,6 +1568,7 @@ private struct TripWorkspaceView: View {
                 ))
                 .accessibilityLabel(title)
                 .accessibilityIdentifier("waypoint-\(id)")
+                .disabled(stop.map { model.roundTripAnchors[$0.id] != nil } ?? false)
                 .focused($focusedWaypoint, equals: field)
                 .onSubmit {
                     if model.searchField == field, let first = model.searchResults.first {
@@ -1320,18 +1586,20 @@ private struct TripWorkspaceView: View {
                 if let stop = model.waypoint(in: field) {
                     if case .stop = field, let index = model.stops.firstIndex(of: stop) {
                         Button("Zwischenziel nach oben", systemImage: "arrow.up") {
-                            model.moveStop(stop, by: -1)
+                            confirmTransitChange { model.moveStop(stop, by: -1) }
                         }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
                         .accessibilityIdentifier("move-up-\(id)")
-                        .disabled(index == 0)
+                        .disabled(index == 0 || model.isProtectedRoundTripAnchor(stop)
+                                  || model.isProtectedRoundTripAnchor(model.stops[index - 1]))
                         Button("Zwischenziel nach unten", systemImage: "arrow.down") {
-                            model.moveStop(stop, by: 1)
+                            confirmTransitChange { model.moveStop(stop, by: 1) }
                         }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
-                        .disabled(index == model.stops.count - 1)
+                        .disabled(index == model.stops.count - 1 || model.isProtectedRoundTripAnchor(stop)
+                                  || model.isProtectedRoundTripAnchor(model.stops[index + 1]))
                     }
                     mapsButton(for: stop, id: "open-maps-\(id)")
                     let expanded = waypointEditor?.id == stop.id && waypointEditor?.isStageBudget == false
@@ -1348,25 +1616,12 @@ private struct TripWorkspaceView: View {
                     Button("Zwischenziel entfernen", systemImage: "minus.circle", action: remove)
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
+                        .disabled(stop.map { model.isProtectedRoundTripAnchor($0) } ?? false)
                 }
             }
             if let stop {
                 let details = model.waypointDetails(for: stop)
-                HStack(spacing: 8) {
-                    Label(details.category?.title ?? "Keine Kategorie",
-                          systemImage: details.category?.systemImage ?? "tag")
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text("Verweilzeit: \(DurationInputFormat.string(details.stayMinutes))")
-                        .lineLimit(1)
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(
-                    "Kategorie: \(details.category?.title ?? "Keine Kategorie"), Verweilzeit: \(DurationInputFormat.string(details.stayMinutes))"
-                )
-                .accessibilityIdentifier("waypoint-summary-\(id)")
+                WaypointSummary(details: details, identifier: "waypoint-summary-\(id)")
                 if let draft = waypointEditor, draft.id == stop.id, !draft.isStageBudget {
                     waypointDetailsEditor(draft)
                 }
@@ -1408,9 +1663,33 @@ private struct TripWorkspaceView: View {
     }
 
     private func choose(_ result: RoadStop, in field: WaypointField) {
-        if model.chooseSearchResult(result, in: field) {
-            focusedWaypoint = nil
-            if fixturePOI == nil { focusMap(on: result) }
+        let changesAnchor: Bool
+        if case .stop(let id) = field {
+            changesAnchor = model.roundTripAnchors.values.contains(id)
+                || model.lodgingTours.contains { $0.anchorID == id }
+        } else if field == .destination, let id = model.destination?.id {
+            changesAnchor = model.lodgingTours.contains { $0.anchorID == id }
+        } else if field == .start, let id = model.start?.id {
+            changesAnchor = model.lodgingTours.contains { $0.anchorID == id }
+        } else {
+            changesAnchor = false
+        }
+        confirmTransitChange(changesAnchor: changesAnchor) {
+            if model.chooseSearchResult(result, in: field) {
+                focusedWaypoint = nil
+                if fixturePOI == nil { focusMap(on: result) }
+            }
+        }
+    }
+
+    private func confirmTransitChange(changesAnchor: Bool = false, planner: TripPlannerViewModel? = nil,
+                                      _ action: @escaping () -> Void) {
+        if (planner ?? model).transitLegs.isEmpty && !changesAnchor { action() }
+        else {
+            transitChangeMessage = changesAnchor
+                ? "Der Übernachtungsort und die Start- und Endpunkte aller zugehörigen Rundtouren werden geändert. Betroffene ÖPNV-Markierungen werden entfernt."
+                : "Wenn markierte Punkte nicht mehr benachbart sind, werden ihre ÖPNV-Markierungen entfernt."
+            pendingTransitChange = action
         }
     }
 
@@ -1454,9 +1733,20 @@ private struct TripWorkspaceView: View {
         .accessibilityIdentifier(id)
     }
 
-    private func openInMaps(_ stop: RoadStop) {
+    private func openInMaps(_ stop: RoadStop, planner: TripPlannerViewModel? = nil) {
+        let model = planner ?? model
         let item = MapKitRouteService.mapItem(for: stop)
-        if !launchMaps(item, [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving]) {
+        let waypoints = model.orderedWaypoints
+        let index = waypoints.firstIndex(of: stop)
+        let previous = index.flatMap { $0 > 0 ? waypoints[$0 - 1] : nil }
+        let direction: String
+        if let previous, model.mode(from: previous, to: stop) == .walking {
+            direction = model.isTransit(from: previous, to: stop)
+                ? MKLaunchOptionsDirectionsModeTransit : MKLaunchOptionsDirectionsModeWalking
+        } else {
+            direction = MKLaunchOptionsDirectionsModeDriving
+        }
+        if !launchMaps(item, [MKLaunchOptionsDirectionsModeKey: direction]) {
             showMapsError = true
         }
     }
@@ -1577,6 +1867,340 @@ func waypointFocusRegion(for stop: RoadStop) -> MKCoordinateRegion {
     MKCoordinateRegion(center: stop.coordinate, latitudinalMeters: 20_000, longitudinalMeters: 20_000)
 }
 
+private struct LodgingTourCard: View {
+    @ObservedObject var model: TripPlannerViewModel
+    let anchor: RoadStop
+    let number: Int
+    @Binding var draft: WaypointEditorDraft?
+    let onMap: () -> Void
+    let onOpenMaps: (RoadStop) -> Void
+    let onFocus: (RoadStop) -> Void
+    let onDelete: () -> Void
+    @State private var confirmDelete = false
+    @State private var showDiagnostics = false
+    @State private var confirmRouting = false
+    @State private var confirmOverrun = false
+    @State private var pendingChange: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label("Rundtour \(number) ab \(anchor.name)", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            if let stage = model.stages.first {
+                Picker("Verkehrsmittel", selection: Binding(
+                    get: { model.mode(for: stage) },
+                    set: { model.setMode($0, for: stage) }
+                )) {
+                    ForEach(TravelMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .accessibilityIdentifier("lodging-tour-mode")
+                Text("Start: \(anchor.name)").font(.caption)
+                ForEach(Array(model.stops.enumerated()), id: \.element.id) { index, stop in
+                    if model.mode(for: stage) == .walking,
+                       let previous = model.orderedWaypoints.firstIndex(of: stop).map({ model.orderedWaypoints[$0 - 1] }) {
+                        transitToggle(from: previous, to: stop)
+                    }
+                    tourWaypoint(stop, index: index)
+                    if draft?.id == stop.id, let draft {
+                        WaypointDetailsEditor(draft: draft) { edited, minutes in
+                            model.updateDetails(edited.merging(model.waypointDetails(for: edited.stop),
+                                                               stayMinutes: minutes), for: edited.stop)
+                            self.draft = nil
+                        } cancel: { self.draft = nil }
+                    }
+                }
+                if model.mode(for: stage) == .walking, let previous = model.orderedWaypoints.dropLast().last,
+                   let end = model.destination, previous.distance(to: end) > 0 {
+                    transitToggle(from: previous, to: end)
+                }
+                HStack {
+                    Text("Rückkehr: \(anchor.name)").font(.caption)
+                    Button("In Apple Karten öffnen", systemImage: "map") {
+                        if let destination = model.destination { onOpenMaps(destination) }
+                    }.labelStyle(.iconOnly)
+                }
+                if model.searchField == .newStop {
+                    TextField("Ort oder POI suchen", text: Binding(
+                        get: { model.query }, set: { model.updateSearch($0, in: .newStop) }
+                    ))
+                    .accessibilityIdentifier("lodging-tour-search")
+                    ForEach(Array(model.searchResults.enumerated()), id: \.element.id) { index, result in
+                        Button(result.name) {
+                            requestChange { _ = model.chooseSearchResult(result, in: .newStop, distinctOccurrence: true) }
+                        }
+                            .accessibilityIdentifier("lodging-tour-search-result-\(index)")
+                    }
+                    if let error = model.errorMessage { Text(error).foregroundStyle(.red) }
+                    Button("Suche abbrechen") { model.cancelSearch() }
+                } else {
+                    Button("Zwischenziel hinzufügen", systemImage: "plus.circle") {
+                        model.beginSearch(in: .newStop)
+                    }
+                    .accessibilityIdentifier("lodging-tour-add-stop")
+                    .disabled(draft != nil)
+                }
+                if let end = model.destination {
+                    let explicitBudget = model.waypointDetails(for: end).stageBudgetMinutes
+                    let budget = explicitBudget.map(DurationInputFormat.string)
+                        ?? model.defaultStageBudgetMinutes.map { "Standard \(DurationInputFormat.string($0))" } ?? "keins"
+                    Button("Budget: \(budget)") {
+                        draft = WaypointEditorDraft(stop: end, details: model.waypointDetails(for: end),
+                                                    isStart: false, isDestination: true, isStageBudget: true)
+                    }
+                    .disabled(draft != nil)
+                    if draft?.id == end.id, let draft {
+                        InlineStageBudgetEditor(draft: draft) { edited, minutes in
+                            var details = model.waypointDetails(for: edited.stop)
+                            details.stageBudgetMinutes = minutes
+                            model.updateDetails(details, for: edited.stop)
+                            self.draft = nil
+                        } cancel: { self.draft = nil }
+                    }
+                }
+                if let overrun = stage.budgetOverrun {
+                    if stage.isBudgetOverrunAccepted {
+                        Text("Budgetüberschreitung bestätigt").font(.caption)
+                        Button("Budgetbestätigung zurücknehmen") {
+                            model.clearBudgetOverrunAcceptance(endingAt: stage.end)
+                        }
+                    } else {
+                        Text("Budget voraussichtlich um \(overrun.arrivalMinutes - overrun.budgetMinutes) min überschritten.")
+                            .font(.caption).foregroundStyle(.orange)
+                        Button("Budgetüberschreitung bestätigen") { confirmOverrun = true }
+                        Button("Budgetpunkt auf der Karte zeigen", action: onMap)
+                    }
+                }
+                if let route = model.roadPreview {
+                    let minutes = Int(exactly: ceil(route.duration / 60))
+                    Text("Berechnet: \(minutes.map(DurationInputFormat.string) ?? "Zeit nicht verfügbar") · \(route.distance.formatted(.number.precision(.fractionLength(0)))) m")
+                        .accessibilityIdentifier("lodging-tour-route-summary")
+                } else if model.isOptimizing {
+                    ProgressView("Rundtour wird berechnet …")
+                } else if model.routeStatus == .failed {
+                    Text("Rundtour nicht vollständig berechnet").foregroundStyle(.orange)
+                }
+                HStack {
+                    Button("Auf Karte", systemImage: "map", action: onMap)
+                    if model.automaticRouting {
+                        Button("Pausieren", systemImage: "pause.circle") { model.pauseRouting() }
+                        Button("Erneut", systemImage: "arrow.clockwise") { model.retryRouting() }
+                    } else {
+                        Button("Berechnen", systemImage: "play.circle") { confirmRouting = true }
+                            .accessibilityIdentifier("lodging-tour-calculate")
+                    }
+                    Button("Optimieren", systemImage: "arrow.triangle.branch") { model.optimizeRoute() }
+                        .disabled(!model.automaticRouting || model.isOptimizing || model.stops.isEmpty)
+                    Button("Diagnose", systemImage: "info.circle") { showDiagnostics = true }
+                        .popover(isPresented: $showDiagnostics) {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                ScrollView {
+                                    Text(model.routingDiagnostic ?? model.liveRoutingDiagnostic(at: context.date))
+                                        .textSelection(.enabled).padding()
+                                }.frame(width: 520, height: 360)
+                            }
+                        }
+                    Button("Rundtour löschen", systemImage: "trash", role: .destructive) { confirmDelete = true }
+                        .accessibilityIdentifier("lodging-tour-delete")
+                }.labelStyle(.iconOnly)
+                if model.suggestion != nil {
+                    Button("Optimierung übernehmen") { requestChange { model.acceptSuggestion() } }
+                }
+                if let notice = model.transitNotice { Text(notice).font(.caption).foregroundStyle(.orange) }
+                let affectedIDs = Set(model.unavailableConnections
+                    .filter { model.mode(from: $0.from, to: $0.to) == .driving }
+                    .flatMap { [$0.from.id, $0.to.id] })
+                ForEach(model.orderedWaypoints.filter { affectedIDs.contains($0.id) }) { waypoint in
+                    Button("Parkplätze bei „\(waypoint.name)“ prüfen") { model.searchParking(near: waypoint) }
+                        .disabled(model.isSearchingParking)
+                }
+                if model.isSearchingParking {
+                    ProgressView("Parkplätze werden geprüft …")
+                } else if let error = model.parkingSearchError {
+                    Text("Parkplatzsuche fehlgeschlagen: \(error)").foregroundStyle(.red)
+                } else if model.parkingSearchWaypoint != nil {
+                    if model.parkingSuggestions.isEmpty {
+                        Text("Kein passend angebundener Parkplatz gefunden.").font(.caption)
+                    } else {
+                        Text("Geprüfte Ersatzpunkte; Entfernung ist Luftlinie, kein geprüfter Fußweg.")
+                            .font(.caption)
+                        ForEach(model.parkingSuggestions) { parking in
+                            Button(parking.name) { onFocus(parking) }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .overlay { RoundedRectangle(cornerRadius: 8).stroke(.secondary.opacity(0.35)) }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("lodging-tour-card")
+        .alert("Rundtour mit Apple MapKit berechnen?", isPresented: $confirmRouting) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Aktivieren") { model.enableAutomaticRouting() }
+                .accessibilityIdentifier("lodging-tour-confirm-routing")
+        } message: {
+            Text("Wegpunkt-Koordinaten und ein gegebenenfalls festgelegtes Reisestartdatum werden an Apple gesendet. Nach Änderungen wird die Rundtour automatisch neu berechnet. ÖPNV-Zeiten sind Schätzungen.")
+        }
+        .alert("Rundtour löschen?", isPresented: $confirmDelete) {
+            Button("Löschen", role: .destructive, action: onDelete)
+                .accessibilityIdentifier("confirm-lodging-tour-delete")
+            Button("Abbrechen", role: .cancel) {}
+                .accessibilityIdentifier("cancel-lodging-tour-delete")
+        } message: {
+            Text("Die Tour und ihre Zwischenziele werden entfernt. Ungespeicherte Änderungen gehen verloren. Fotos bleiben erhalten; ihre Zuordnungen müssen gegebenenfalls neu gewählt werden.")
+        }
+        .alert("Zeitüberschreitung bestätigen?", isPresented: $confirmOverrun) {
+            Button("Budgetpunkt ausblenden") {
+                if let stage = model.stages.first, let overrun = stage.budgetOverrun {
+                    model.acceptBudgetOverrun(overrun, endingAt: stage.end)
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Der Budgetpunkt wird ausgeblendet. Die Route bleibt unverändert.")
+        }
+        .alert("ÖPNV-Markierungen prüfen?", isPresented: Binding(
+            get: { pendingChange != nil }, set: { if !$0 { pendingChange = nil } }
+        )) {
+            Button("Fortfahren") { let action = pendingChange; pendingChange = nil; action?() }
+            Button("Abbrechen", role: .cancel) { pendingChange = nil }
+        } message: {
+            Text("Nicht mehr benachbarte ÖPNV-Markierungen werden entfernt.")
+        }
+    }
+
+    private func requestChange(_ action: @escaping () -> Void) {
+        if model.transitLegs.isEmpty { action() } else { pendingChange = action }
+    }
+
+    private func tourWaypoint(_ stop: RoadStop, index: Int) -> some View {
+        let field = WaypointField.stop(stop.id)
+        let title = "Zwischenziel \(index + 1)"
+        let details = model.waypointDetails(for: stop)
+        let appearance = WaypointAppearance(details: details, isStart: false, isDestination: false)
+        return VStack(alignment: .leading, spacing: 6) {
+            Button { onFocus(stop) } label: {
+                Label {
+                    Text(title)
+                } icon: {
+                    Image(systemName: appearance.systemImage).foregroundStyle(appearance.color)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .help("\(title) auf der Karte zeigen")
+            .accessibilityLabel("\(title) auf der Karte zeigen")
+            .accessibilityIdentifier("lodging-tour-focus-stop-\(index + 1)")
+            HStack {
+                TextField("Ort oder POI suchen", text: Binding(
+                    get: { model.fieldText(field) }, set: { model.updateSearch($0, in: field) }
+                ))
+                .accessibilityLabel(title)
+                .accessibilityIdentifier("lodging-tour-stop-\(index + 1)")
+                .onSubmit {
+                    if model.searchField == field, let first = model.searchResults.first {
+                        requestChange { _ = model.chooseSearchResult(first, in: field, distinctOccurrence: true) }
+                    }
+                }
+                .onExitCommand { if model.searchField == field { model.cancelSearch() } }
+                if model.searchField == field {
+                    Button("Suche abbrechen", systemImage: "xmark.circle") { model.cancelSearch() }
+                }
+                Button("Zwischenziel nach oben", systemImage: "arrow.up") {
+                    requestChange { model.moveStop(stop, by: -1) }
+                }.disabled(index == 0)
+                Button("Zwischenziel nach unten", systemImage: "arrow.down") {
+                    requestChange { model.moveStop(stop, by: 1) }
+                }.disabled(index == model.stops.count - 1)
+                Button("In Apple Karten öffnen", systemImage: "map") { onOpenMaps(stop) }
+                    .accessibilityIdentifier("lodging-tour-open-maps-\(index + 1)")
+                let expanded = draft?.id == stop.id && draft?.isStageBudget == false
+                Button(expanded ? "Wegpunktdetails einklappen" : "Wegpunktdetails ausklappen",
+                       systemImage: expanded ? "chevron.up" : "chevron.down") {
+                    draft = WaypointEditorDraft(stop: stop, details: details, isStart: false,
+                                                isDestination: false, protectedOvernight: true)
+                }
+                .accessibilityIdentifier("lodging-tour-waypoint-details-\(index + 1)")
+                Button("Zwischenziel entfernen", systemImage: "minus.circle") {
+                    requestChange { model.removeStop(stop) }
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .disabled(draft != nil)
+            WaypointSummary(details: details, identifier: "lodging-tour-waypoint-summary-\(index + 1)")
+            if model.searchField == field {
+                if model.isSearching {
+                    ProgressView("Suche läuft …").controlSize(.small)
+                } else if let error = model.errorMessage {
+                    Text("Suche fehlgeschlagen: \(error)").foregroundStyle(.red)
+                    Button("Suche erneut versuchen") { model.updateSearch(model.query, in: field) }
+                        .buttonStyle(.borderless)
+                } else if model.searchFinished && model.searchResults.isEmpty {
+                    Text("Keine passenden Orte gefunden.").foregroundStyle(.secondary)
+                }
+                ForEach(Array(model.searchResults.prefix(5).enumerated()), id: \.element.id) { resultIndex, result in
+                    Button {
+                        requestChange { _ = model.chooseSearchResult(result, in: field, distinctOccurrence: true) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(result.name)
+                            if !result.subtitle.isEmpty {
+                                Text(result.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("lodging-tour-edit-search-result-\(resultIndex)")
+                    .disabled(draft != nil)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func transitToggle(from: RoadStop, to: RoadStop) -> some View {
+        Toggle("ÖPNV: \(from.name) → \(to.name)", isOn: Binding(
+            get: { model.isTransit(from: from, to: to) },
+            set: { model.setTransit($0, from: from, to: to) }
+        ))
+        .toggleStyle(.checkbox)
+        .font(.caption)
+        .accessibilityIdentifier("lodging-tour-transit-\(model.orderedWaypoints.firstIndex(of: to) ?? 0)")
+    }
+}
+
+private struct WaypointSummary: View {
+    let details: WaypointDetails
+    let identifier: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(details.category?.title ?? "Keine Kategorie",
+                  systemImage: details.category?.systemImage ?? "tag")
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text("Verweilzeit: \(DurationInputFormat.string(details.stayMinutes))")
+                .lineLimit(1)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "Kategorie: \(details.category?.title ?? "Keine Kategorie"), Verweilzeit: \(DurationInputFormat.string(details.stayMinutes))"
+        )
+        .accessibilityIdentifier(identifier)
+    }
+}
+
 struct WaypointAppearance {
     let systemImage: String
     let color: Color
@@ -1602,7 +2226,7 @@ struct WaypointAppearance {
 }
 
 private enum WaypointEditorAction {
-    case close, open(RoadStop), openStageBudget(RoadStop), selectTrip(RoadTrip.ID), newTrip, showRoute
+    case close, open(RoadStop), openStageBudget(RoadStop), selectTrip(RoadTrip.ID), newTrip, editTrip(RoadTrip), showRoute
 }
 
 private final class WaypointEditorDraft: ObservableObject, Identifiable {
@@ -1612,16 +2236,19 @@ private final class WaypointEditorDraft: ObservableObject, Identifiable {
     let isStart: Bool
     let isDestination: Bool
     let isStageBudget: Bool
+    let protectedOvernight: Bool
     @Published var details: WaypointDetails
     @Published var stay: String
     @Published var budget: String
 
-    init(stop: RoadStop, details: WaypointDetails, isStart: Bool, isDestination: Bool, isStageBudget: Bool = false) {
+    init(stop: RoadStop, details: WaypointDetails, isStart: Bool, isDestination: Bool,
+         isStageBudget: Bool = false, protectedOvernight: Bool = false) {
         self.stop = stop
         self.original = details
         self.isStart = isStart
         self.isDestination = isDestination
         self.isStageBudget = isStageBudget
+        self.protectedOvernight = protectedOvernight
         self.details = details
         self.stay = DurationInputFormat.string(details.stayMinutes)
         self.budget = details.stageBudgetMinutes.map(DurationInputFormat.string) ?? ""
@@ -1683,6 +2310,7 @@ private struct WaypointDetailsEditor: View {
             if !draft.isStart {
                 Toggle("Übernachtungsort", isOn: $draft.details.overnight)
                     .toggleStyle(.checkbox)
+                    .disabled(draft.protectedOvernight)
                     .accessibilityIdentifier("waypoint-overnight")
                 LabeledContent("Besuchsstatus") {
                     Picker("Besuchsstatus", selection: $draft.details.status) {
@@ -1834,6 +2462,27 @@ private struct StageBudgetEditor: View {
     }
 }
 
+struct TransitChangeConfirmation: ViewModifier {
+    @Binding var action: (() -> Void)?
+    var message = "Wenn markierte Punkte nicht mehr benachbart sind, werden ihre ÖPNV-Markierungen entfernt."
+
+    func body(content: Content) -> some View {
+        content.alert("Routenänderung bestätigen?", isPresented: Binding(
+            get: { action != nil },
+            set: { if !$0 { action = nil } }
+        )) {
+            Button("Änderung durchführen") {
+                let change = action
+                action = nil
+                change?()
+            }
+            Button("Abbrechen", role: .cancel) { action = nil }
+        } message: {
+            Text(message)
+        }
+    }
+}
+
 private struct TripEditorDraft: Identifiable {
     let id = UUID()
     let tripID: RoadTrip.ID?
@@ -1841,6 +2490,8 @@ private struct TripEditorDraft: Identifiable {
     var notes: String
     var hasDepartureDate: Bool
     var departureDate: Date
+    var isRoundTrip: Bool
+    let originalIsRoundTrip: Bool
 
     init(trip: RoadTrip? = nil) {
         tripID = trip?.id
@@ -1848,6 +2499,8 @@ private struct TripEditorDraft: Identifiable {
         notes = trip?.notes ?? ""
         hasDepartureDate = trip?.departureDate != nil
         departureDate = trip?.departureDate ?? Date()
+        isRoundTrip = trip?.waypoints.isRoundTrip ?? false
+        originalIsRoundTrip = isRoundTrip
     }
 }
 
@@ -1855,7 +2508,8 @@ private struct TripEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var nameIsFocused: Bool
     @State var draft: TripEditorDraft
-    let onSave: (String, String, Date?) -> Void
+    @State private var showTypeChangeConfirmation = false
+    let onSave: (String, String, Date?, Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1864,6 +2518,11 @@ private struct TripEditorView: View {
             TextField("Name", text: $draft.name)
                 .accessibilityIdentifier("trip-name")
                 .focused($nameIsFocused)
+            Picker("Routentyp", selection: $draft.isRoundTrip) {
+                Text("Start–Ziel").tag(false)
+                Text("Rundtour").tag(true)
+            }
+            .accessibilityIdentifier("trip-type")
             Text("Beschreibung")
             TextEditor(text: $draft.notes)
                 .accessibilityLabel("Beschreibung")
@@ -1885,7 +2544,11 @@ private struct TripEditorView: View {
                 Button("Abbrechen") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Speichern") {
-                    onSave(draft.name, draft.notes, draft.hasDepartureDate ? draft.departureDate : nil)
+                    if draft.tripID != nil && draft.isRoundTrip != draft.originalIsRoundTrip {
+                        showTypeChangeConfirmation = true
+                    } else {
+                        save()
+                    }
                 }
                     .keyboardShortcut(.defaultAction)
                     .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -1894,5 +2557,20 @@ private struct TripEditorView: View {
         .defaultFocus($nameIsFocused, true)
         .padding()
         .frame(width: 400)
+        .alert("Routentyp ändern?", isPresented: $showTypeChangeConfirmation) {
+            Button("Routentyp ändern") { save() }
+                .accessibilityIdentifier("confirm-trip-type-change")
+            Button("Abbrechen", role: .cancel) {}
+                .accessibilityIdentifier("cancel-trip-type-change")
+        } message: {
+            Text(draft.isRoundTrip
+                 ? "Alle Unterkunftstouren und ihre Wegpunkte werden in ihrer bisherigen Reihenfolge in eine einzige Rundtour übernommen. Das bisherige Ziel bleibt Zwischenpunkt; die Route endet am Start. Übernachtungsgrenzen entfallen, der erste Modus gilt für die gesamte Tour, explizite Budgets werden addiert und frühere Budgetbestätigungen zurückgesetzt. Weiterhin benachbarte ÖPNV-Markierungen und Fotozuordnungen bleiben erhalten; andere müssen gegebenenfalls überprüft werden."
+                 : "Der Rückweg zum Start entfällt. Der letzte Zwischenpunkt wird zum Ziel; ohne Zwischenpunkt muss ein neues Ziel gewählt werden. Zuordnungen und ÖPNV-Markierungen des entfallenden Rückwegs können ungültig werden.")
+        }
+    }
+
+    private func save() {
+        onSave(draft.name, draft.notes, draft.hasDepartureDate ? draft.departureDate : nil,
+               draft.isRoundTrip)
     }
 }

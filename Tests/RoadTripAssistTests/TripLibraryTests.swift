@@ -40,6 +40,289 @@ final class TripLibraryTests: XCTestCase {
         XCTAssertNil(decoded.departureDate)
     }
 
+    @MainActor
+    func testLodgingToursSurviveEncodingAndUnrelatedPlannerEdits() throws {
+        let hotel = stop("Hotel", latitude: 50, longitude: 1)
+        let tourStart = hotel.newOccurrence()
+        let tourEnd = hotel.newOccurrence()
+        let museum = stop("Museum", latitude: 50, longitude: 1.1)
+        let tour = LodgingTour(
+            anchorID: hotel.id,
+            waypoints: TripWaypoints(start: tourStart, stops: [museum], destination: tourEnd,
+                                     stageModes: [tourEnd.id: .walking], isRoundTrip: true)
+        )
+        let waypoints = TripWaypoints(start: stop("Start", latitude: 50, longitude: 0),
+                                     stops: [hotel], destination: stop("Ziel", latitude: 50, longitude: 2),
+                                     details: [hotel.id: WaypointDetails(overnight: true)],
+                                     lodgingTours: [tour])
+        let decoded = try JSONDecoder().decode(TripWaypoints.self, from: JSONEncoder().encode(waypoints))
+        let planner = TripPlannerViewModel()
+        planner.loadWaypoints(decoded)
+        var saved: TripWaypoints?
+        planner.onWaypointsChanged = { saved = $0 }
+
+        planner.updateDetails(WaypointDetails(notes: "Notiz", overnight: true), for: hotel)
+
+        let savedTour = try XCTUnwrap(saved?.lodgingTours.first)
+        XCTAssertEqual(savedTour.id, tour.id)
+        XCTAssertEqual(savedTour.anchorID, hotel.id)
+        XCTAssertEqual(savedTour.waypoints.start, tourStart)
+        XCTAssertEqual(savedTour.waypoints.stops, [museum])
+        XCTAssertEqual(savedTour.waypoints.destination, tourEnd)
+        XCTAssertEqual(savedTour.waypoints.stageModes[tourEnd.id], .walking)
+    }
+
+    func testStandaloneRoundTripMergePreservesExplicitBudgetsTransitAndPhotos() throws {
+        let start = stop("Start", latitude: 50, longitude: 1)
+        let hotel = stop("Hotel", latitude: 50, longitude: 1.1)
+        let museum = stop("Museum", latitude: 50, longitude: 1.2)
+        let end = start.newOccurrence()
+        let transit = TransitLeg(from: hotel.id, to: museum.id)
+        let overrun = StageBudgetOverrun(waypointIDs: [start.id, hotel.id], budgetMinutes: 45,
+                                         arrivalMinutes: 55)
+        let photo = TripPhoto(fileExtension: "jpg", originalName: "photo.jpg", capturedAt: nil,
+                              coordinate: nil, assignment: .init(target: .stage(hotel.id), status: .confirmed))
+        var trip = RoadTrip(name: "Tour", notes: "", waypoints: TripWaypoints(
+            start: start, stops: [hotel, museum], destination: end,
+            details: [hotel.id: WaypointDetails(notes: "Notiz", overnight: true, stageBudgetMinutes: 45,
+                                                acceptedBudgetOverrun: overrun),
+                      museum.id: WaypointDetails(stayMinutes: 30)],
+            defaultStageBudgetMinutes: 90, stageModes: [hotel.id: .walking, end.id: .driving],
+            transitLegs: [transit], isRoundTrip: true
+        ), photos: [photo])
+
+        let notice = try XCTUnwrap(RoundTripMigration.mergeStandalone(&trip))
+
+        XCTAssertTrue(notice.contains("Nicht alle Etappen"))
+        XCTAssertTrue(notice.contains("zurückgesetzt"))
+        XCTAssertEqual(trip.waypoints.stops, [hotel, museum])
+        XCTAssertEqual(trip.waypoints.details[hotel.id]?.notes, "Notiz")
+        XCTAssertEqual(trip.waypoints.details[hotel.id]?.overnight, false)
+        XCTAssertNil(trip.waypoints.details[hotel.id]?.stageBudgetMinutes)
+        XCTAssertNil(trip.waypoints.details[hotel.id]?.acceptedBudgetOverrun)
+        XCTAssertEqual(trip.waypoints.details[museum.id]?.stayMinutes, 30)
+        XCTAssertEqual(trip.waypoints.details[end.id]?.stageBudgetMinutes, 45)
+        XCTAssertEqual(trip.waypoints.stageModes, [end.id: .walking])
+        XCTAssertEqual(trip.waypoints.transitLegs, [transit])
+        XCTAssertEqual(trip.photos.first?.assignment, .init(target: .stage(end.id), status: .confirmed))
+        XCTAssertNil(try RoundTripMigration.mergeStandalone(&trip))
+    }
+
+    func testStandaloneRoundTripMergeFailsWithoutModifyingOverflowingTrip() throws {
+        let start = stop("Start", latitude: 50, longitude: 1)
+        let hotel = stop("Hotel", latitude: 50, longitude: 1.1)
+        let end = start.newOccurrence()
+        var trip = RoadTrip(name: "Tour", notes: "", waypoints: TripWaypoints(
+            start: start, stops: [hotel], destination: end,
+            details: [hotel.id: WaypointDetails(overnight: true, stageBudgetMinutes: Int.max),
+                      end.id: WaypointDetails(stageBudgetMinutes: 1)], isRoundTrip: true
+        ))
+        let before = try JSONEncoder().encode(trip)
+
+        XCTAssertThrowsError(try RoundTripMigration.mergeStandalone(&trip))
+        let after = try JSONEncoder().encode(trip)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: before) as? NSDictionary,
+                       try JSONSerialization.jsonObject(with: after) as? NSDictionary)
+    }
+
+    func testExtractsMultipleToursAtDestinationAndMigratesSegments() throws {
+        let start = stop("Start", latitude: 50, longitude: 0)
+        let hotel = stop("Hotel", latitude: 50, longitude: 1)
+        let museum = stop("Museum", latitude: 50, longitude: 1.1)
+        let park = stop("Park", latitude: 50, longitude: 1.2)
+        let firstReturn = hotel.newOccurrence()
+        let secondReturn = hotel.newOccurrence()
+        let assignment = PhotoAssignment(target: .routeSegment(from: firstReturn.id, to: park.id),
+                                         status: .suggested)
+        let photo = TripPhoto(fileExtension: "jpg", originalName: "photo.jpg", capturedAt: nil,
+                              coordinate: nil, assignment: assignment)
+        let firstTransit = TransitLeg(from: hotel.id, to: museum.id)
+        let secondTransit = TransitLeg(from: firstReturn.id, to: park.id)
+        var trip = RoadTrip(name: "Reise", notes: "", waypoints: TripWaypoints(
+            start: start, stops: [hotel, museum, firstReturn, park], destination: secondReturn,
+            details: [hotel.id: WaypointDetails(overnight: true),
+                      firstReturn.id: WaypointDetails(overnight: true, stageBudgetMinutes: 45),
+                      secondReturn.id: WaypointDetails(overnight: true)],
+            stageModes: [firstReturn.id: .walking, secondReturn.id: .walking],
+            transitLegs: [firstTransit, secondTransit],
+            roundTripAnchors: [firstReturn.id: hotel.id, secondReturn.id: hotel.id]
+        ), photos: [photo])
+
+        XCTAssertNotNil(try RoundTripMigration.extractLodgingTours(&trip))
+
+        XCTAssertEqual(trip.waypoints.destination, hotel)
+        XCTAssertTrue(trip.waypoints.stops.isEmpty)
+        XCTAssertTrue(trip.waypoints.roundTripAnchors.isEmpty)
+        XCTAssertEqual(trip.waypoints.lodgingTours.count, 2)
+        let first = trip.waypoints.lodgingTours[0]
+        let second = trip.waypoints.lodgingTours[1]
+        XCTAssertEqual(first.anchorID, hotel.id)
+        XCTAssertEqual(second.anchorID, hotel.id)
+        let firstStart = try XCTUnwrap(first.waypoints.start)
+        let secondStart = try XCTUnwrap(second.waypoints.start)
+        XCTAssertNotEqual(firstStart.id, hotel.id)
+        XCTAssertNotEqual(secondStart.id, firstReturn.id)
+        XCTAssertNotEqual(secondStart.id, firstStart.id)
+        XCTAssertEqual(first.waypoints.stops, [museum])
+        XCTAssertEqual(first.waypoints.destination, firstReturn)
+        XCTAssertEqual(second.waypoints.stops, [park])
+        XCTAssertEqual(second.waypoints.destination, secondReturn)
+        XCTAssertEqual(first.waypoints.details[firstReturn.id]?.stageBudgetMinutes, 45)
+        XCTAssertEqual(first.waypoints.transitLegs, [TransitLeg(from: firstStart.id, to: museum.id)])
+        XCTAssertEqual(second.waypoints.transitLegs, [TransitLeg(from: secondStart.id, to: park.id)])
+        XCTAssertEqual(trip.photos.first?.assignment,
+                       .init(target: .routeSegment(from: secondStart.id, to: park.id), status: .suggested))
+        XCTAssertNil(try RoundTripMigration.extractLodgingTours(&trip))
+    }
+
+    func testExtractingTourMapsOnwardSegmentsAndResetsChangedStageAcceptance() throws {
+        let start = stop("Start", latitude: 50, longitude: 0)
+        let hotel = stop("Hotel", latitude: 50, longitude: 1)
+        let museum = stop("Museum", latitude: 50, longitude: 1.1)
+        let returned = hotel.newOccurrence()
+        let end = stop("Ziel", latitude: 50, longitude: 2)
+        let accepted = StageBudgetOverrun(waypointIDs: [returned.id, end.id], budgetMinutes: 45,
+                                          arrivalMinutes: 55)
+        let photo = TripPhoto(fileExtension: "jpg", originalName: "photo.jpg", capturedAt: nil,
+                              coordinate: nil, assignment: .init(
+                                target: .routeSegment(from: returned.id, to: end.id), status: .confirmed))
+        var trip = RoadTrip(name: "Reise", notes: "", waypoints: TripWaypoints(
+            start: start, stops: [hotel, museum, returned], destination: end,
+            details: [hotel.id: WaypointDetails(overnight: true),
+                      returned.id: WaypointDetails(overnight: true),
+                      end.id: WaypointDetails(overnight: true, stageBudgetMinutes: 45,
+                                              acceptedBudgetOverrun: accepted)],
+            transitLegs: [TransitLeg(from: returned.id, to: end.id)],
+            roundTripAnchors: [returned.id: hotel.id]
+        ), photos: [photo])
+
+        let notice = try XCTUnwrap(RoundTripMigration.extractLodgingTours(&trip))
+
+        XCTAssertTrue(notice.contains("zurückgesetzt"))
+        XCTAssertEqual(trip.waypoints.stops, [hotel])
+        XCTAssertEqual(trip.waypoints.destination, end)
+        XCTAssertNil(trip.waypoints.details[end.id]?.acceptedBudgetOverrun)
+        XCTAssertEqual(trip.waypoints.transitLegs, [TransitLeg(from: hotel.id, to: end.id)])
+        XCTAssertEqual(trip.photos.first?.assignment,
+                       .init(target: .routeSegment(from: hotel.id, to: end.id), status: .confirmed))
+    }
+
+    func testExtractingAmbiguousTourFailsWithoutModifyingTrip() throws {
+        let start = stop("Start", latitude: 50, longitude: 0)
+        let hotel = stop("Hotel", latitude: 50, longitude: 1)
+        let invalidReturn = stop("Anderswo", latitude: 50, longitude: 2)
+        var trip = RoadTrip(name: "Reise", notes: "", waypoints: TripWaypoints(
+            start: start, stops: [hotel], destination: invalidReturn,
+            details: [hotel.id: WaypointDetails(overnight: true)],
+            roundTripAnchors: [invalidReturn.id: hotel.id]
+        ))
+        let before = try JSONEncoder().encode(trip)
+
+        XCTAssertThrowsError(try RoundTripMigration.extractLodgingTours(&trip))
+        let after = try JSONEncoder().encode(trip)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: before) as? NSDictionary,
+                       try JSONSerialization.jsonObject(with: after) as? NSDictionary)
+    }
+
+    @MainActor
+    func testMigrationIsAtomicAcrossTripsAndPersistsAfterRetry() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let start = stop("Start", latitude: 50, longitude: 0)
+        let hotel = stop("Hotel", latitude: 50, longitude: 1)
+        let returned = hotel.newOccurrence()
+        let valid = RoadTrip(name: "Gut", notes: "", waypoints: TripWaypoints(
+            start: start, stops: [hotel], destination: returned,
+            details: [hotel.id: WaypointDetails(overnight: true)],
+            roundTripAnchors: [returned.id: hotel.id]
+        ))
+        var invalid = valid
+        invalid.id = UUID()
+        invalid.name = "Ungültig"
+        invalid.waypoints.roundTripAnchors[returned.id] = UUID()
+        try store.save([valid, invalid])
+        let original = try Data(contentsOf: store.url)
+
+        let failed = TripLibrary(store: store)
+        XCTAssertNotNil(failed.loadError)
+        XCTAssertTrue(failed.trips.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: store.url), original)
+
+        try store.save([valid])
+        failed.retryLoad()
+        XCTAssertNil(failed.loadError)
+        let tour = try XCTUnwrap(failed.selectedTrip?.waypoints.lodgingTours.first)
+        XCTAssertEqual(failed.selectedTrip?.waypoints.destination, hotel)
+        XCTAssertFalse(try XCTUnwrap(failed.selectedTrip).migrationNotices.isEmpty)
+        let reopened = TripLibrary(store: store)
+        XCTAssertEqual(reopened.selectedTrip?.waypoints.lodgingTours.first?.id, tour.id)
+        XCTAssertEqual(reopened.selectedTrip?.waypoints.lodgingTours.first?.waypoints.start?.id, tour.waypoints.start?.id)
+        XCTAssertEqual(reopened.selectedTrip?.migrationNotices.count, 1)
+    }
+
+    @MainActor
+    func testConvertingTripFlattensToursAndPreservesPhotoAndTransitIdentities() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let start = stop("Start", latitude: 50, longitude: 0)
+        let hotel = stop("Hotel", latitude: 50, longitude: 1)
+        let museum = stop("Museum", latitude: 50, longitude: 1.1)
+        let tourStart = hotel.newOccurrence()
+        let tourEnd = hotel.newOccurrence()
+        let tour = LodgingTour(anchorID: hotel.id, waypoints: TripWaypoints(
+            start: tourStart, stops: [museum], destination: tourEnd,
+            details: [tourEnd.id: WaypointDetails(stageBudgetMinutes: 60)],
+            stageModes: [tourEnd.id: .driving], transitLegs: [TransitLeg(from: tourStart.id, to: museum.id)],
+            isRoundTrip: true
+        ))
+        let photo = TripPhoto(fileExtension: "jpg", originalName: "photo.jpg", capturedAt: nil,
+                              coordinate: nil, assignment: .init(
+                                target: .routeSegment(from: tourStart.id, to: museum.id), status: .confirmed))
+        let trip = RoadTrip(name: "Reise", notes: "", waypoints: TripWaypoints(
+            start: start, destination: hotel, details: [hotel.id: WaypointDetails(overnight: true, stageBudgetMinutes: 90)],
+            stageModes: [hotel.id: .walking], lodgingTours: [tour]
+        ), photos: [photo])
+        try store.save([trip])
+        let library = TripLibrary(store: store)
+
+        library.updateTrip(id: trip.id, name: "Reise", notes: "", departureDate: nil, isRoundTrip: true)
+
+        let converted = try XCTUnwrap(library.selectedTrip)
+        let newEnd = try XCTUnwrap(converted.waypoints.destination)
+        XCTAssertTrue(converted.waypoints.isRoundTrip)
+        XCTAssertTrue(converted.waypoints.lodgingTours.isEmpty)
+        XCTAssertEqual(converted.waypoints.stops, [hotel, museum, tourEnd])
+        XCTAssertEqual(library.planner.stages.count, 1)
+        XCTAssertEqual(converted.waypoints.stageModes[newEnd.id], .walking)
+        XCTAssertEqual(converted.waypoints.details[newEnd.id]?.stageBudgetMinutes, 150)
+        XCTAssertTrue(converted.waypoints.transitLegs.contains(TransitLeg(from: hotel.id, to: museum.id)))
+        XCTAssertEqual(converted.photos.first?.assignment,
+                       .init(target: .routeSegment(from: hotel.id, to: museum.id), status: .confirmed))
+        XCTAssertEqual(TripLibrary(store: store).planner.stages.count, 1)
+    }
+
+    func testConvertingIncludesTourAnchoredAtStart() throws {
+        let start = stop("Unterkunft", latitude: 50, longitude: 0)
+        let end = stop("Ziel", latitude: 50, longitude: 2)
+        let museum = stop("Museum", latitude: 50, longitude: 0.1)
+        let tourStart = start.newOccurrence()
+        let tourEnd = start.newOccurrence()
+        let tour = LodgingTour(anchorID: start.id, waypoints: TripWaypoints(
+            start: tourStart, stops: [museum], destination: tourEnd, isRoundTrip: true
+        ))
+        var trip = RoadTrip(name: "Reise", notes: "", waypoints: TripWaypoints(
+            start: start, destination: end, details: [start.id: WaypointDetails(overnight: true)],
+            lodgingTours: [tour]
+        ))
+
+        _ = try RoundTripMigration.convertToStandalone(&trip)
+
+        XCTAssertEqual(trip.waypoints.stops, [museum, tourEnd, end])
+        XCTAssertTrue(trip.waypoints.lodgingTours.isEmpty)
+    }
+
     func testLegacyPhotoDecodesWithoutRotation() throws {
         let data = Data(#"{"id":"00000000-0000-0000-0000-000000000001","fileExtension":"jpg","originalName":"photo.jpg"}"#.utf8)
 
@@ -100,6 +383,37 @@ final class TripLibraryTests: XCTestCase {
         ))
     }
 
+    func testPhotoSuggestionsSearchTourContextsWithoutConnectingThem() {
+        let a = stop("Hauptreise A", latitude: 0, longitude: 0)
+        let b = stop("Hauptreise B", latitude: 0, longitude: 0.1)
+        let c = stop("Tour A", latitude: 1, longitude: 0)
+        let d = stop("Tour B", latitude: 1, longitude: 0.1)
+        let first = PhotoAssignmentSuggester.Context(waypoints: [a, b], stages: [], routeLegs: [
+            RouteLeg(duration: 1, distance: 1, coordinates: [a.coordinate, b.coordinate])
+        ])
+        let second = PhotoAssignmentSuggester.Context(waypoints: [c, d], stages: [], routeLegs: [
+            RouteLeg(duration: 1, distance: 1, coordinates: [c.coordinate, d.coordinate])
+        ])
+        XCTAssertEqual(PhotoAssignmentSuggester.suggest(
+            at: .init(latitude: 1.005, longitude: 0.05), contexts: [first, second]
+        ), .routeSegment(from: c.id, to: d.id))
+        XCTAssertNil(PhotoAssignmentSuggester.suggest(
+            at: .init(latitude: 0.5, longitude: 0.05), contexts: [first, second]
+        ))
+    }
+
+    func testTransitSchematicLineIsNotUsedForPhotoSegmentSuggestions() {
+        let start = stop("Start", latitude: 0, longitude: 0)
+        let end = stop("Ziel", latitude: 0, longitude: 0.1)
+        let leg = RouteLeg(duration: 100, distance: 11_000,
+                           coordinates: [start.coordinate, end.coordinate], isTransit: true)
+        let stage = TripStage(waypoints: [start, end], legs: [leg], waypointStayMinutes: [0, 0],
+                              budgetMinutes: nil, endsWithOvernight: false)
+        let target = PhotoAssignmentSuggester.suggest(at: .init(latitude: 0.005, longitude: 0.05),
+                                                      waypoints: [start, end], stages: [stage], routeLegs: [leg])
+        XCTAssertEqual(target, .stage(end.id))
+    }
+
     @MainActor
     func testPhotoImportCopiesAssetAndPersistsConfirmedAssignment() async throws {
         let directory = try makeTemporaryDirectory()
@@ -129,6 +443,132 @@ final class TripLibraryTests: XCTestCase {
         try reopened.deletePhoto(reopenedPhoto.id, tripID: trip.id)
         XCTAssertTrue(reopened.selectedTrip?.photos.isEmpty == true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: reopened.photoURL(for: reopenedPhoto, tripID: trip.id).path))
+    }
+
+    @MainActor
+    func testDeletingEarlierRoundTripPreservesLaterPhotoSegmentAssignment() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Tour", notes: "")
+        let tripID = try XCTUnwrap(library.selectedID)
+        let hotel = stop("Hotel", latitude: 50, longitude: 1)
+        let park = stop("Park", latitude: 50, longitude: 1.1)
+        let planner = library.planner
+        planner.setStart(stop("Start", latitude: 50, longitude: 0))
+        planner.setDestination(stop("Ende", latitude: 50, longitude: 2))
+        planner.addStop(hotel)
+        planner.updateDetails(WaypointDetails(overnight: true), for: hotel)
+        planner.addLodgingTour(at: hotel)
+        let firstID = try XCTUnwrap(planner.lodgingTours.first?.id)
+        planner.addLodgingTour(at: hotel)
+        let secondID = try XCTUnwrap(planner.lodgingTours.last?.id)
+        let secondTour = try XCTUnwrap(planner.tourPlanners[secondID])
+        secondTour.addStop(park)
+        let oldStart = try XCTUnwrap(secondTour.start)
+        try await library.addPhoto(data: makeImageData(), originalName: "photo.jpg", tripID: tripID)
+        let photo = try XCTUnwrap(library.selectedTrip?.photos.first)
+        try library.updatePhotoAssignment(.routeSegment(from: oldStart.id, to: park.id),
+                                          photoID: photo.id, tripID: tripID)
+        try await library.addPhoto(data: makeImageData(), originalName: "other.jpg", tripID: tripID)
+        let other = try XCTUnwrap(library.selectedTrip?.photos.last)
+        try library.updatePhotoAssignment(.waypoint(park.id), photoID: other.id, tripID: tripID)
+
+        planner.removeLodgingTour(firstID)
+        let reopened = TripLibrary(store: store)
+        let migratedStart = try XCTUnwrap(reopened.selectedTrip?.waypoints.lodgingTours.first?.waypoints.start)
+        XCTAssertEqual(migratedStart.id, oldStart.id)
+        XCTAssertEqual(reopened.selectedTrip?.photos.first?.assignment?.target,
+                       .routeSegment(from: migratedStart.id, to: park.id))
+        XCTAssertEqual(reopened.selectedTrip?.photos.last?.assignment?.target, .waypoint(park.id))
+    }
+
+    @MainActor
+    func testChangingTripTypePreservesStagesAndPhotoAssignments() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Tour", notes: "")
+        let tripID = try XCTUnwrap(library.selectedID)
+        let start = stop("Start", latitude: 50, longitude: 0)
+        let end = stop("Ziel", latitude: 50, longitude: 1)
+        let planner = library.planner
+        planner.setStart(start)
+        planner.setDestination(end)
+        planner.setMode(.walking, for: planner.stages[0])
+        planner.updateDetails(WaypointDetails(stageBudgetMinutes: 120), for: end)
+        planner.setTransit(true, from: start, to: end)
+        try await library.addPhoto(data: makeImageData(), originalName: "photo.jpg", tripID: tripID)
+        let photo = try XCTUnwrap(library.selectedTrip?.photos.first)
+        try library.updatePhotoAssignment(.stage(end.id), photoID: photo.id, tripID: tripID)
+
+        library.updateTrip(id: tripID, name: "Tour", notes: "", departureDate: nil, isRoundTrip: true)
+        let returnPoint = try XCTUnwrap(planner.destination)
+        XCTAssertEqual(planner.stops, [end])
+        XCTAssertEqual(returnPoint.coordinate.latitude, start.coordinate.latitude)
+        XCTAssertEqual(returnPoint.coordinate.longitude, start.coordinate.longitude)
+        XCTAssertEqual(planner.mode(for: planner.stages[0]), .walking)
+        XCTAssertEqual(planner.stages[0].budgetMinutes, 120)
+        XCTAssertTrue(planner.isTransit(from: start, to: end))
+        XCTAssertEqual(library.selectedTrip?.photos.first?.assignment?.target, .stage(returnPoint.id))
+
+        library.updateTrip(id: tripID, name: "Tour", notes: "", departureDate: nil, isRoundTrip: false)
+        XCTAssertEqual(planner.destination, end)
+        XCTAssertTrue(planner.stops.isEmpty)
+        XCTAssertEqual(planner.mode(for: planner.stages[0]), .walking)
+        XCTAssertEqual(planner.stages[0].budgetMinutes, 120)
+        XCTAssertEqual(library.selectedTrip?.photos.first?.assignment?.target, .stage(end.id))
+        let reopened = TripLibrary(store: store)
+        XCTAssertEqual(reopened.selectedTrip?.photos.first?.assignment?.target, .stage(end.id))
+        XCTAssertFalse(reopened.planner.isRoundTrip)
+    }
+
+    @MainActor
+    func testEditingTripMetadataDoesNotChangeItsType() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = TripLibrary(store: TripStore(url: directory.appending(path: "trips.json")))
+        library.updateTrip(id: nil, name: "Tour", notes: "", departureDate: nil, isRoundTrip: true)
+        let id = try XCTUnwrap(library.selectedID)
+        library.updateTrip(id: id, name: "Anders", notes: "", departureDate: Date())
+        XCTAssertTrue(library.planner.isRoundTrip)
+        XCTAssertTrue(library.selectedTrip?.waypoints.isRoundTrip == true)
+    }
+
+    @MainActor
+    func testChangingRoundTripStartKeepsReturnIdentityAndAssignments() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = TripLibrary(store: TripStore(url: directory.appending(path: "trips.json")))
+        library.updateTrip(id: nil, name: "Tour", notes: "", departureDate: nil, isRoundTrip: true)
+        let id = try XCTUnwrap(library.selectedID)
+        let planner = library.planner
+        planner.setStart(stop("Start", latitude: 50, longitude: 0))
+        let returnPoint = try XCTUnwrap(planner.destination)
+        try await library.addPhoto(data: makeImageData(), originalName: "photo.jpg", tripID: id)
+        let photo = try XCTUnwrap(library.selectedTrip?.photos.first)
+        try library.updatePhotoAssignment(.stage(returnPoint.id), photoID: photo.id, tripID: id)
+        let newStart = stop("Neuer Start", latitude: 51, longitude: 1)
+        planner.setStart(newStart)
+        XCTAssertEqual(planner.destination?.id, returnPoint.id)
+        XCTAssertEqual(planner.destination?.coordinate.latitude, newStart.coordinate.latitude)
+        XCTAssertEqual(library.selectedTrip?.photos.first?.assignment?.target, .stage(returnPoint.id))
+    }
+
+    @MainActor
+    func testConvertingTripBeforeSettingStartRetainsFinalStageSettings() {
+        let model = TripPlannerViewModel()
+        let end = stop("Ziel", latitude: 50, longitude: 1)
+        model.loadWaypoints(TripWaypoints(destination: end,
+                                           details: [end.id: WaypointDetails(stageBudgetMinutes: 120)],
+                                           stageModes: [end.id: .walking]))
+        model.setRoundTrip(true)
+        model.setStart(stop("Start", latitude: 50, longitude: 0))
+        XCTAssertEqual(model.stops, [end])
+        XCTAssertEqual(model.mode(for: model.stages[0]), .walking)
+        XCTAssertEqual(model.stages[0].budgetMinutes, 120)
     }
 
     @MainActor
@@ -176,6 +616,41 @@ final class TripLibraryTests: XCTestCase {
         XCTAssertEqual(library.planner.waypointDetails(for: existing).stayMinutes, 45)
         XCTAssertEqual(library.selectedTrip?.photos.first?.assignment,
                        PhotoAssignment(target: .waypoint(existing.id), status: .confirmed))
+    }
+
+    @MainActor
+    func testPhotoLocationUsesSelectedTourRatherThanNearbyMainWaypoint() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appending(path: "trips.json"))
+        let library = TripLibrary(store: store)
+        library.updateTrip(id: nil, name: "Fotoreise", notes: "")
+        let tripID = try XCTUnwrap(library.selectedID)
+        let mainWaypoint = stop("Hauptreise", latitude: -47.25, longitude: 11.5)
+        let hotel = stop("Hotel", latitude: -47.3, longitude: 11.6)
+        library.planner.setStart(mainWaypoint)
+        library.planner.setDestination(stop("Ziel", latitude: -47, longitude: 12))
+        library.planner.addStop(hotel)
+        library.planner.updateDetails(WaypointDetails(overnight: true), for: hotel)
+        library.planner.addLodgingTour(at: hotel)
+        let tourID = try XCTUnwrap(library.planner.lodgingTours.first?.id)
+        let tour = try XCTUnwrap(library.planner.tourPlanners[tourID])
+        try await library.addPhoto(data: makeImageData(), originalName: "Aussicht.jpg", tripID: tripID)
+        let photo = try XCTUnwrap(library.selectedTrip?.photos.first)
+
+        let waypoint = try library.addPhotoLocationAsWaypoint(photoID: photo.id, tripID: tripID, tourID: tourID)
+        XCTAssertNotEqual(waypoint.id, mainWaypoint.id)
+        XCTAssertFalse(library.planner.orderedWaypoints.contains(waypoint))
+        XCTAssertTrue(tour.stops.contains(waypoint))
+        XCTAssertEqual(tour.waypointDetails(for: waypoint).category, .photo)
+        XCTAssertEqual(try library.addPhotoLocationAsWaypoint(photoID: photo.id, tripID: tripID, tourID: tourID).id,
+                       waypoint.id)
+        XCTAssertEqual(tour.stops.count, 1)
+
+        let reopened = TripLibrary(store: store)
+        XCTAssertEqual(reopened.planner.lodgingTours.first?.waypoints.stops, [waypoint])
+        XCTAssertEqual(reopened.selectedTrip?.photos.first?.assignment,
+                       PhotoAssignment(target: .waypoint(waypoint.id), status: .confirmed))
     }
 
     @MainActor
@@ -499,6 +974,10 @@ final class TripLibraryTests: XCTestCase {
         let waypoints = try JSONDecoder().decode(TripWaypoints.self, from: Data("{\"stops\":[]}".utf8))
         XCTAssertFalse(waypoints.manualOrder)
         XCTAssertTrue(waypoints.stops.isEmpty)
+        XCTAssertFalse(waypoints.isRoundTrip)
+        XCTAssertTrue(waypoints.stageModes.isEmpty)
+        XCTAssertTrue(waypoints.roundTripAnchors.isEmpty)
+        XCTAssertTrue(waypoints.transitLegs.isEmpty)
     }
 
     @MainActor

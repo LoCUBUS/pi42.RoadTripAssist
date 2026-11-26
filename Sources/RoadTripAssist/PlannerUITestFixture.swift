@@ -29,11 +29,20 @@ struct PlannerUITestFixture {
                                coordinate: .init(latitude: 52.51627, longitude: 13.37770)))
         let places = search
         let variableTravelTime = ProcessInfo.processInfo.arguments.contains("--ui-testing-optimization")
-        let failRoute = ProcessInfo.processInfo.arguments.contains("--ui-testing-routing-error")
+        let stallRoute = ProcessInfo.processInfo.arguments.contains("--ui-testing-routing-stall")
+        let transitionRoute = ProcessInfo.processInfo.arguments.contains("--ui-testing-routing-transition")
+        let failRoute = ProcessInfo.processInfo.arguments.contains("--ui-testing-routing-error") || stallRoute || transitionRoute
         let service = MapKitRouteService { from, to in
             if failRoute && from.name == "Startstadt" {
                 throw NSError(domain: MKErrorDomain, code: Int(MKError.Code.directionsNotFound.rawValue),
                               userInfo: [NSLocalizedDescriptionKey: "Test-Routenfehler"])
+            }
+            if stallRoute && from.name == "Zwischenstadt A" {
+                try await Task.sleep(for: .seconds(30))
+            }
+            if transitionRoute && from.name == "Zwischenstadt A" {
+                try await Task.sleep(for: .seconds(8))
+                throw NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
             }
             let distance = abs(from.coordinate.longitude - to.coordinate.longitude)
             return RouteLeg(duration: variableTravelTime ? 600 * distance : 600, distance: 1_000 * distance,

@@ -6,6 +6,467 @@ import XCTest
 
 final class ProgressiveRoutingTests: XCTestCase {
     @MainActor
+    func testLodgingTourUsesIndependentRoutingAndPersistsEdits() async throws {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let end = stop("Ziel", 50, 2)
+        let museum = stop("Museum", 50, 1.1)
+        let service = MapKitRouteService { from, to, _, _ in
+            if from.name == "Museum" {
+                throw NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+            }
+            return RouteLeg(duration: 100, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [hotel], destination: end,
+                                          manualOrder: true, details: [hotel.id: WaypointDetails(overnight: true)]))
+        var saved: TripWaypoints?
+        model.onWaypointsChanged = { saved = $0 }
+        model.addLodgingTour(at: hotel)
+        let tourID = try XCTUnwrap(model.lodgingTours.first?.id)
+        let tour = try XCTUnwrap(model.tourPlanners[tourID])
+        tour.addStop(museum)
+        XCTAssertEqual(saved?.lodgingTours.first?.waypoints.stops, [museum])
+        XCTAssertEqual(model.orderedWaypoints, [start, hotel, end])
+
+        model.enableAutomaticRouting()
+        tour.enableAutomaticRouting()
+        try await waitForRouting(model)
+        try await waitForRouting(tour)
+        XCTAssertEqual(model.routeStatus, .finished)
+        XCTAssertNotNil(model.roadPreview)
+        XCTAssertEqual(tour.routeStatus, .failed)
+        XCTAssertFalse(tour.currentConnections.isEmpty)
+        XCTAssertNil(tour.roadPreview)
+        XCTAssertNil(model.completeJourneyTotals)
+
+        model.removeLodgingTour(tourID)
+        XCTAssertTrue(model.lodgingTours.isEmpty)
+        XCTAssertNil(model.tourPlanners[tourID])
+        XCTAssertTrue(saved?.lodgingTours.isEmpty == true)
+    }
+
+    @MainActor
+    func testTourSearchKeepsRepeatedPlacesDistinctAcrossContexts() async throws {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let destination = stop("Ziel", 50, 2)
+        let model = TripPlannerViewModel(findPlaces: { query in
+            query == hotel.name ? [hotel] : [destination]
+        })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [hotel], destination: destination,
+                                          manualOrder: true, details: [hotel.id: WaypointDetails(overnight: true)]))
+        var saved: TripWaypoints?
+        model.onWaypointsChanged = { saved = $0 }
+        model.addLodgingTour(at: hotel)
+        model.addLodgingTour(at: hotel)
+        let first = try XCTUnwrap(model.tourPlanners[model.lodgingTours[0].id])
+        let second = try XCTUnwrap(model.tourPlanners[model.lodgingTours[1].id])
+
+        for tour in [first, second] {
+            tour.updateSearch(destination.name, in: .newStop)
+            try await waitForSearch(tour)
+            XCTAssertTrue(tour.chooseSearchResult(destination, in: .newStop, distinctOccurrence: true))
+        }
+        let firstStop = try XCTUnwrap(first.stops.first)
+        let secondStop = try XCTUnwrap(second.stops.first)
+        XCTAssertEqual(firstStop.name, destination.name)
+        XCTAssertNotEqual(firstStop.id, destination.id)
+        XCTAssertNotEqual(firstStop.id, secondStop.id)
+
+        first.updateSearch(hotel.name, in: .stop(firstStop.id))
+        try await waitForSearch(first)
+        XCTAssertTrue(first.chooseSearchResult(hotel, in: .stop(firstStop.id), distinctOccurrence: true))
+        let replacement = try XCTUnwrap(first.stops.first)
+        XCTAssertEqual(replacement.name, hotel.name)
+        XCTAssertNotEqual(replacement.id, hotel.id)
+        XCTAssertEqual(model.orderedWaypoints, [start, hotel, destination])
+
+        let restored = try JSONDecoder().decode(TripWaypoints.self, from: JSONEncoder().encode(XCTUnwrap(saved)))
+        try RoundTripMigration.validate(restored)
+        XCTAssertEqual(restored.lodgingTours[0].waypoints.stops, [replacement])
+        XCTAssertEqual(restored.lodgingTours[1].waypoints.stops, [secondStop])
+    }
+
+    @MainActor
+    func testJourneyTotalsRequireAllRoutesAndDoNotCountLodgingTwice() async throws {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let end = stop("Ziel", 50, 2)
+        let museum = stop("Museum", 50, 1.1)
+        let service = MapKitRouteService { from, to, _, _ in
+            RouteLeg(duration: 100, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [hotel], destination: end,
+                                          manualOrder: true,
+                                          details: [hotel.id: WaypointDetails(stayMinutes: 60, overnight: true)]))
+        model.addLodgingTour(at: hotel)
+        let tour = try XCTUnwrap(model.tourPlanners[try XCTUnwrap(model.lodgingTours.first?.id)])
+        tour.addStop(museum)
+        tour.updateDetails(WaypointDetails(stayMinutes: 10), for: museum)
+        let tourEnd = try XCTUnwrap(tour.destination)
+        tour.updateDetails(WaypointDetails(stayMinutes: 60), for: tourEnd)
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        XCTAssertNil(model.completeJourneyTotals)
+
+        tour.enableAutomaticRouting()
+        try await waitForRouting(tour)
+        let total = try XCTUnwrap(model.completeJourneyTotals)
+        XCTAssertEqual(total.duration, 4_600)
+        XCTAssertEqual(total.distance, 400)
+    }
+
+    @MainActor
+    func testLiveDiagnosticsIncludesEarlierFailureAndPendingWalkingRequest() async throws {
+        let start = stop("Start", 50, 0)
+        let middle = stop("Mitte", 50, 0.01)
+        let end = stop("Ziel", 50, 0.02)
+        let started = expectation(description: "second request started")
+        let service = MapKitRouteService { from, to, _, _ in
+            if from == start {
+                throw NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+            }
+            started.fulfill()
+            try await Task.sleep(for: .seconds(30))
+            return RouteLeg(duration: 100, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [middle], destination: end, manualOrder: true))
+        model.setMode(.walking, for: model.stages[0])
+        model.enableAutomaticRouting()
+        await fulfillment(of: [started], timeout: 5)
+
+        let diagnostic = model.liveRoutingDiagnostic()
+        XCTAssertTrue(model.isOptimizing)
+        XCTAssertTrue(diagnostic.contains("Domain: NSURLErrorDomain"))
+        XCTAssertTrue(diagnostic.contains("Aktuelle Anfrage: „Mitte“"))
+        XCTAssertTrue(diagnostic.contains("„Ziel“"))
+        XCTAssertTrue(diagnostic.contains("Verkehrsmittel: Zu Fuß"))
+        XCTAssertTrue(diagnostic.contains("1 von 2 abgeschlossen"))
+
+        model.pauseRouting()
+        XCTAssertNil(model.currentRequest)
+        XCTAssertTrue(model.liveRoutingDiagnostic().contains("Berechnung pausiert"))
+        XCTAssertFalse(model.liveRoutingDiagnostic().contains("Aktuelle Anfrage:"))
+    }
+
+    @MainActor
+    func testStageModesAndTransitUseSeparateCachedConnections() async throws {
+        let start = stop("Start", 50, 0)
+        let overnight = stop("Hotel", 50, 1)
+        let end = stop("Ziel", 50, 2)
+        var requests: [(String, MapKitRouteService.Transport)] = []
+        let service = MapKitRouteService { from, to, _, mode in
+            requests.append(("\(from.name)-\(to.name)", mode))
+            return RouteLeg(duration: 100, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [overnight], destination: end,
+                                           manualOrder: true, details: [overnight.id: WaypointDetails(overnight: true)]))
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(requests.map(\.1), [.driving, .driving])
+
+        model.setMode(.walking, for: model.stages[1])
+        try await waitForRouting(model)
+        XCTAssertEqual(requests.map(\.1), [.driving, .driving, .walking])
+        model.setTransit(true, from: overnight, to: end)
+        try await waitForRouting(model)
+        XCTAssertEqual(requests.last?.1, .transit)
+        XCTAssertTrue(model.roadPreview?.legs.last?.isTransit == true)
+
+        model.setMode(.driving, for: model.stages[1])
+        try await waitForRouting(model)
+        XCTAssertTrue(model.isTransit(from: overnight, to: end))
+        XCTAssertFalse(model.roadPreview?.legs.last?.isTransit == true)
+        model.setMode(.walking, for: model.stages[1])
+        try await waitForRouting(model)
+        XCTAssertTrue(model.roadPreview?.legs.last?.isTransit == true)
+        XCTAssertEqual(requests.count, 4)
+    }
+
+    @MainActor
+    func testReorderingRemovesOnlyDisconnectedTransitMarkersEvenWhileDriving() {
+        let start = stop("Start", 50, 0)
+        let first = stop("A", 50, 1)
+        let second = stop("B", 50, 2)
+        let end = stop("Ziel", 50, 3)
+        let model = TripPlannerViewModel()
+        model.loadWaypoints(TripWaypoints(start: start, stops: [first, second], destination: end,
+                                           manualOrder: true))
+        model.setMode(.walking, for: model.stages[0])
+        model.setTransit(true, from: first, to: second)
+        model.setMode(.driving, for: model.stages[0])
+        model.moveStop(first, by: 1)
+        XCTAssertFalse(model.isTransit(from: first, to: second))
+        XCTAssertNotNil(model.transitNotice)
+    }
+
+    @MainActor
+    func testOptimizationUsesTransitOnlyForMarkedDirectedPair() async throws {
+        let start = stop("Start", 50, 0)
+        let a = stop("A", 50, 1)
+        let b = stop("B", 50, 2)
+        let end = stop("Ziel", 50, 3)
+        var requests: [(String, MapKitRouteService.Transport)] = []
+        let service = MapKitRouteService { from, to, _, mode in
+            let pair = "\(from.name)-\(to.name)"
+            requests.append((pair, mode))
+            let fast = ["Start-B", "B-A", "A-Ziel"].contains(pair)
+            return RouteLeg(duration: fast ? 1 : 100, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a, b], destination: end, manualOrder: true))
+        model.setMode(.walking, for: model.stages[0])
+        model.setTransit(true, from: a, to: b)
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        model.optimizeRoute()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.suggestion?.orderedStops, [b, a])
+        XCTAssertTrue(model.suggestionRemovesTransit)
+        XCTAssertTrue(model.isTransit(from: a, to: b))
+        XCTAssertEqual(requests.first(where: { $0.0 == "A-B" })?.1, .transit)
+        XCTAssertEqual(requests.first(where: { $0.0 == "B-A" })?.1, .walking)
+        model.acceptSuggestion()
+        XCTAssertFalse(model.isTransit(from: a, to: b))
+    }
+
+    @MainActor
+    func testTransitRequestAndSchematicLegDoNotPretendToHaveGeometry() {
+        let from = stop("Start", 50, 1)
+        let to = stop("Ziel", 50, 2)
+        let date = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertEqual(MapKitRouteService.directionsRequest(from: from, to: to, departureDate: date,
+                                                            mode: .walking).transportType, .walking)
+        XCTAssertEqual(MapKitRouteService.directionsRequest(from: from, to: to, departureDate: date,
+                                                            mode: .transit).transportType, .transit)
+        let leg = RouteLeg(duration: 100, distance: 100, coordinates: [from.coordinate, to.coordinate], isTransit: true)
+        XCTAssertNil(leg.coordinate(atFraction: 0.5))
+    }
+
+    @MainActor
+    func testFailedTransitLeavesOtherConnectionsAvailable() async throws {
+        let start = stop("Start", 50, 0)
+        let a = stop("A", 50, 1)
+        let end = stop("Ziel", 50, 2)
+        let service = MapKitRouteService { from, to, _, mode in
+            if mode == .transit { return nil }
+            return RouteLeg(duration: 100, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [a], destination: end, manualOrder: true))
+        model.setMode(.walking, for: model.stages[0])
+        model.setTransit(true, from: start, to: a)
+        model.enableAutomaticRouting()
+        try await waitForRouting(model)
+        XCTAssertEqual(model.routeStatus, .failed)
+        XCTAssertNil(model.roadPreview)
+        XCTAssertEqual(model.unavailableConnections.map(\.from.id), [start.id])
+        XCTAssertEqual(model.currentConnections.map(\.from.id), [a.id])
+        XCTAssertTrue(model.isTransit(from: start, to: a))
+    }
+
+    @MainActor
+    func testRoundTripOptimizationDoesNotChangeMainJourney() async throws {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let museum = stop("Museum", 50, 1.1)
+        let park = stop("Park", 50, 1.2)
+        let end = stop("Ziel", 50, 2)
+        let service = MapKitRouteService { from, to in
+            let fast = ["Hotel-Park", "Park-Museum", "Museum-Hotel"].contains("\(from.name)-\(to.name)")
+            return RouteLeg(duration: fast ? 1 : 100, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service)
+        model.loadWaypoints(TripWaypoints(start: start, stops: [hotel], destination: end,
+                                           manualOrder: true, details: [hotel.id: WaypointDetails(overnight: true)]))
+        model.addLodgingTour(at: hotel)
+        let tour = try XCTUnwrap(model.tourPlanners[try XCTUnwrap(model.lodgingTours.first?.id)])
+        tour.addStop(museum)
+        tour.addStop(park)
+        model.enableAutomaticRouting()
+        tour.enableAutomaticRouting()
+        try await waitForRouting(model)
+        try await waitForRouting(tour)
+        tour.optimizeRoute()
+        try await waitForRouting(tour)
+        XCTAssertEqual(tour.suggestion?.orderedStops, [park, museum])
+        tour.acceptSuggestion()
+        XCTAssertEqual(tour.stages[0].waypoints.map(\.name), ["Hotel", "Park", "Museum", "Hotel"])
+        XCTAssertEqual(model.orderedWaypoints, [start, hotel, end])
+        XCTAssertEqual(model.routeStatus, .finished)
+    }
+
+    @MainActor
+    func testRoundTripsAtSameHotelRemainSeparateAndCanBeDeleted() throws {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let end = stop("Ziel", 50, 2)
+        let first = stop("Museum", 50, 1.1)
+        let second = stop("Park", 50, 1.2)
+        let model = TripPlannerViewModel()
+        var saved: TripWaypoints?
+        model.onWaypointsChanged = { saved = $0 }
+        model.loadWaypoints(TripWaypoints(start: start, stops: [hotel], destination: end, manualOrder: true,
+                                           details: [hotel.id: WaypointDetails(overnight: true)]))
+        model.addLodgingTour(at: hotel)
+        let firstID = try XCTUnwrap(model.lodgingTours.first?.id)
+        model.tourPlanners[firstID]?.addStop(first)
+        model.addLodgingTour(at: hotel)
+        let secondID = try XCTUnwrap(model.lodgingTours.last?.id)
+        model.tourPlanners[secondID]?.addStop(second)
+        XCTAssertEqual(model.stages.count, 2)
+        XCTAssertEqual(model.tourPlanners[firstID]?.stages[0].waypoints.map(\.name), ["Hotel", "Museum", "Hotel"])
+        XCTAssertEqual(model.tourPlanners[secondID]?.stages[0].waypoints.map(\.name), ["Hotel", "Park", "Hotel"])
+
+        let encoded = try JSONEncoder().encode(XCTUnwrap(saved))
+        let decoded = try JSONDecoder().decode(TripWaypoints.self, from: encoded)
+        let reopened = TripPlannerViewModel()
+        reopened.loadWaypoints(decoded)
+        XCTAssertEqual(reopened.stages.count, 2)
+        XCTAssertEqual(reopened.lodgingTours.count, 2)
+        reopened.removeLodgingTour(firstID)
+        XCTAssertEqual(reopened.lodgingTours.map(\.id), [secondID])
+        XCTAssertEqual(reopened.tourPlanners[secondID]?.stages[0].waypoints.map(\.name), ["Hotel", "Park", "Hotel"])
+    }
+
+    @MainActor
+    func testStandaloneRoundTripClosesAtStart() {
+        let start = stop("Unterkunft", 50, 1)
+        let model = TripPlannerViewModel()
+        model.loadWaypoints(TripWaypoints(isRoundTrip: true))
+        model.setStart(start)
+        XCTAssertTrue(model.hasEndpoints)
+        XCTAssertNotEqual(model.start?.id, model.destination?.id)
+        XCTAssertEqual(model.start?.coordinate.latitude, model.destination?.coordinate.latitude)
+        XCTAssertEqual(model.start?.coordinate.longitude, model.destination?.coordinate.longitude)
+        XCTAssertTrue(model.isRoundTripStage(model.stages[0]))
+    }
+
+    @MainActor
+    func testRoundTripsAtFinalDestinationCanBeDeletedWithoutLosingDestination() {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let model = TripPlannerViewModel()
+        model.loadWaypoints(TripWaypoints(start: start, destination: hotel,
+                                           details: [hotel.id: WaypointDetails(overnight: true)]))
+        model.addLodgingTour(at: hotel)
+        model.addLodgingTour(at: hotel)
+        XCTAssertEqual(model.lodgingTours.count, 2)
+        for id in model.lodgingTours.map(\.id) { model.removeLodgingTour(id) }
+        XCTAssertTrue(model.lodgingTours.isEmpty)
+        XCTAssertEqual(model.stages.count, 1)
+        XCTAssertEqual(model.destination, hotel)
+    }
+
+    @MainActor
+    func testChangingHotelMovesRoundTripEndpointsAndInvalidatesCachedLegs() async throws {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let replacement = stop("Neues Hotel", 50, 1.5)
+        let end = stop("Ziel", 50, 2)
+        var requests = 0
+        let service = MapKitRouteService { from, to in
+            requests += 1
+            return RouteLeg(duration: 100, distance: 100, coordinates: [from.coordinate, to.coordinate])
+        }
+        let model = TripPlannerViewModel(routeService: service, findPlaces: { _ in [replacement] })
+        model.loadWaypoints(TripWaypoints(start: start, stops: [hotel], destination: end,
+                                           manualOrder: true, details: [hotel.id: WaypointDetails(overnight: true)]))
+        model.addLodgingTour(at: hotel)
+        let tour = try XCTUnwrap(model.tourPlanners[try XCTUnwrap(model.lodgingTours.first?.id)])
+        let attraction = stop("Museum", 50, 1.1)
+        tour.addStop(attraction)
+        model.enableAutomaticRouting()
+        tour.enableAutomaticRouting()
+        try await waitForRouting(model)
+        try await waitForRouting(tour)
+        let count = requests
+        model.updateSearch("Neues Hotel", in: .stop(hotel.id))
+        try await waitForSearch(model)
+        XCTAssertTrue(model.chooseSearchResult(replacement, in: .stop(hotel.id)))
+        try await waitForRouting(model)
+        try await waitForRouting(tour)
+        XCTAssertGreaterThan(requests, count)
+        XCTAssertEqual(tour.stages[0].waypoints.map(\.name), ["Neues Hotel", "Museum", "Neues Hotel"])
+        XCTAssertEqual(tour.start?.coordinate.longitude, 1.5)
+        XCTAssertEqual(tour.destination?.coordinate.longitude, 1.5)
+        XCTAssertEqual(model.stages[0].end.id, hotel.id)
+    }
+
+    @MainActor
+    func testChangingDestinationUpdatesAllTourEndpointsInOneSavedSnapshot() throws {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let replacement = stop("Neues Hotel", 50, 2)
+        let model = TripPlannerViewModel()
+        model.loadWaypoints(TripWaypoints(start: start, destination: hotel,
+                                          details: [hotel.id: WaypointDetails(overnight: true)]))
+        model.addLodgingTour(at: hotel)
+        model.addLodgingTour(at: hotel)
+        var saved: [TripWaypoints] = []
+        model.onWaypointsChanged = { saved.append($0) }
+
+        model.setDestination(replacement)
+
+        XCTAssertEqual(saved.count, 1)
+        let snapshot = try XCTUnwrap(saved.first)
+        XCTAssertNoThrow(try RoundTripMigration.validate(snapshot))
+        XCTAssertEqual(snapshot.destination?.id, hotel.id)
+        XCTAssertEqual(snapshot.destination?.coordinate.longitude, 2)
+        XCTAssertEqual(snapshot.lodgingTours.map { $0.waypoints.start?.coordinate.longitude }, [2, 2])
+        XCTAssertEqual(snapshot.lodgingTours.map { $0.waypoints.destination?.coordinate.longitude }, [2, 2])
+        model.removeStop(hotel)
+        XCTAssertEqual(model.destination?.id, hotel.id)
+    }
+
+    @MainActor
+    func testChangingStartLodgingPreservesItsTours() throws {
+        let hotel = stop("Hotel", 50, 0)
+        let end = stop("Ziel", 50, 2)
+        let replacement = stop("Neues Hotel", 50, 1)
+        let model = TripPlannerViewModel()
+        model.loadWaypoints(TripWaypoints(start: hotel, destination: end,
+                                          details: [hotel.id: WaypointDetails(overnight: true)]))
+        model.addLodgingTour(at: hotel)
+        var saved: TripWaypoints?
+        model.onWaypointsChanged = { saved = $0 }
+
+        model.setStart(replacement)
+
+        let snapshot = try XCTUnwrap(saved)
+        XCTAssertNoThrow(try RoundTripMigration.validate(snapshot))
+        XCTAssertEqual(snapshot.start?.id, hotel.id)
+        XCTAssertEqual(snapshot.lodgingTours.first?.waypoints.start?.coordinate.longitude, 1)
+        XCTAssertEqual(snapshot.lodgingTours.first?.waypoints.destination?.coordinate.longitude, 1)
+    }
+
+    @MainActor
+    func testLodgingToursInheritUpdatedDefaultBudget() throws {
+        let start = stop("Start", 50, 0)
+        let hotel = stop("Hotel", 50, 1)
+        let model = TripPlannerViewModel()
+        model.loadWaypoints(TripWaypoints(start: start, destination: hotel,
+                                          details: [hotel.id: WaypointDetails(overnight: true)],
+                                          defaultStageBudgetMinutes: 90))
+        model.addLodgingTour(at: hotel)
+        let tour = try XCTUnwrap(model.tourPlanners[try XCTUnwrap(model.lodgingTours.first?.id)])
+        XCTAssertEqual(tour.stages.first?.budgetMinutes, 90)
+        XCTAssertTrue(tour.stages.first?.endsWithOvernight == true)
+        var saved: [TripWaypoints] = []
+        model.onWaypointsChanged = { saved.append($0) }
+
+        model.setDefaultStageBudget(120)
+
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first?.lodgingTours.first?.waypoints.defaultStageBudgetMinutes, 120)
+        XCTAssertEqual(tour.stages.first?.budgetMinutes, 120)
+    }
+
+    @MainActor
     func testDepartureDateRecalculatesCachedLegsAndReachesOptimization() async throws {
         let start = stop("Start", 0, 0)
         let a = stop("A", 0, 1)
@@ -253,6 +714,21 @@ final class ProgressiveRoutingTests: XCTestCase {
 
         XCTAssertEqual(model.orderedWaypoints, [start, a, cafe, b, end])
         XCTAssertTrue(model.manualOrder)
+    }
+
+    @MainActor
+    func testMapOvernightInsertionKeepsExistingProvisionalOrder() {
+        let start = stop("Start", 50, 11)
+        let intermediate = stop("Zwischenziel", 50, 12)
+        let end = stop("Ziel", 50, 14)
+        let cafe = stop("Café", 50, 12.5)
+        let model = TripPlannerViewModel()
+        model.setStart(start)
+        model.setDestination(end)
+        model.addStop(intermediate)
+        model.addMapPOI(cafe, asOvernight: true)
+        XCTAssertEqual(model.stops, [intermediate, cafe])
+        XCTAssertTrue(model.waypointDetails(for: cafe).overnight)
     }
 
     @MainActor
@@ -987,6 +1463,43 @@ final class ProgressiveRoutingTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertFalse(model.isSearching)
+    }
+
+    @MainActor
+    func testLiveWalkingRoundTripInBerlin() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ROADTRIP_LIVE_MAPKIT"] == "1",
+                          "Opt in to live MapKit requests with public city-center coordinates.")
+        let start = stop("Brandenburger Tor", 52.51627, 13.37770)
+        let destination = start.newOccurrence()
+        let reichstag = stop("Reichstag", 52.51862, 13.37619)
+        let museum = stop("Museumsinsel", 52.52080, 13.39890)
+        let square = stop("Gendarmenmarkt", 52.51371, 13.39286)
+        let model = TripPlannerViewModel()
+        model.loadWaypoints(TripWaypoints(start: start, stops: [reichstag, museum, square], destination: destination,
+                                           manualOrder: true, isRoundTrip: true))
+        model.setMode(.walking, for: model.stages[0])
+        model.enableAutomaticRouting()
+        defer { model.pauseRouting() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(40))
+        while model.isOptimizing && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertFalse(model.isOptimizing, "Live walking route timed out.")
+        XCTAssertNil(model.routingError, model.routingDiagnostic ?? "")
+        let route = try XCTUnwrap(model.roadPreview, model.routingDiagnostic ?? "No walking route returned.")
+        XCTAssertEqual(route.legs.count, 4)
+        XCTAssertTrue(route.legs.allSatisfy { $0.duration > 0 && $0.coordinates.count >= 2 })
+
+        model.setDepartureDate(Date().addingTimeInterval(86_400))
+        let datedDeadline = ContinuousClock.now.advanced(by: .seconds(40))
+        while model.isOptimizing && ContinuousClock.now < datedDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertFalse(model.isOptimizing, "Dated live walking route timed out.")
+        XCTAssertNil(model.routingError, model.routingDiagnostic ?? "")
+        let datedRoute = try XCTUnwrap(model.roadPreview, model.routingDiagnostic ?? "No dated walking route returned.")
+        XCTAssertEqual(datedRoute.legs.count, 4)
+        XCTAssertTrue(datedRoute.legs.allSatisfy { $0.duration > 0 && $0.coordinates.count >= 2 })
     }
 
     @MainActor

@@ -6,6 +6,97 @@ import XCTest
 
 final class RoadTripAssistUITests: XCTestCase {
     @MainActor
+    func testChangingTripTypeRequiresConfirmationAndSurvivesReopening() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.buttons["Bearbeiten"].click()
+        let type = app.popUpButtons["trip-type"]
+        XCTAssertTrue(type.waitForExistence(timeout: 5))
+        type.click()
+        app.menuItems["Rundtour"].click()
+        app.buttons["Speichern"].click()
+        XCTAssertTrue(app.buttons["Routentyp ändern"].waitForExistence(timeout: 5))
+        app.buttons["cancel-trip-type-change"].click()
+        XCTAssertTrue(app.sheets.firstMatch.exists)
+        app.buttons["Speichern"].click()
+        app.buttons["Routentyp ändern"].click()
+        app.terminate()
+        launchPlanner(app)
+        app.buttons["Bearbeiten"].click()
+        XCTAssertEqual(type.value as? String, "Rundtour")
+    }
+
+    @MainActor
+    func testRoundTripAndWalkingModeSurviveReopening() throws {
+        continueAfterFailure = false
+        let (app, directory) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        let list = app.descendants(matching: .any)["stage-list"].firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        list.scroll(byDeltaX: 0, deltaY: -180)
+        app.buttons["toggle-overnight-2"].click()
+        let add = app.buttons["add-round-trip-1"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.click()
+        let tour = app.descendants(matching: .any)["lodging-tour-card"].firstMatch
+        XCTAssertTrue(tour.waitForExistence(timeout: 5))
+        list.scroll(byDeltaX: 0, deltaY: -300)
+        let addStop = app.buttons["lodging-tour-add-stop"]
+        XCTAssertTrue(addStop.waitForExistence(timeout: 5))
+        addStop.click()
+        let search = app.textFields["lodging-tour-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.click()
+        search.typeText("Zwischenstadt B")
+        list.scroll(byDeltaX: 0, deltaY: -200)
+        let result = app.buttons["lodging-tour-search-result-0"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        result.click()
+        XCTAssertTrue(app.buttons["lodging-tour-open-maps-1"].waitForExistence(timeout: 5))
+        let mode = app.popUpButtons["lodging-tour-mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        mode.click()
+        app.menuItems["Zu Fuß"].click()
+        let transit = app.checkBoxes["lodging-tour-transit-1"]
+        XCTAssertTrue(transit.waitForExistence(timeout: 5))
+        transit.click()
+        app.buttons["lodging-tour-open-maps-1"].click()
+        try assertHandoff(in: directory, name: "Zwischenstadt B", longitude: "13.0",
+                          mode: MKLaunchOptionsDirectionsModeTransit)
+        list.scroll(byDeltaX: 0, deltaY: -250)
+        app.buttons["lodging-tour-calculate"].click()
+        XCTAssertTrue(app.buttons["lodging-tour-confirm-routing"].waitForExistence(timeout: 5))
+        app.buttons["lodging-tour-confirm-routing"].click()
+        XCTAssertTrue(app.staticTexts["lodging-tour-route-summary"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["journey-total-incomplete"].exists)
+        app.buttons["Automatische Berechnung aktivieren"].click()
+        app.buttons["Aktivieren"].click()
+        XCTAssertTrue(app.staticTexts["journey-total"].waitForExistence(timeout: 10))
+        app.radioButtons["Route"].click()
+        XCTAssertTrue(tour.waitForExistence(timeout: 5))
+        app.terminate()
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        XCTAssertTrue(tour.waitForExistence(timeout: 5))
+        XCTAssertEqual(mode.value as? String, "Zu Fuß")
+        XCTAssertEqual(transit.value as? Int, 1)
+        let delete = app.buttons["lodging-tour-delete"]
+        delete.click()
+        XCTAssertTrue(app.buttons["cancel-lodging-tour-delete"].waitForExistence(timeout: 5))
+        app.buttons["cancel-lodging-tour-delete"].click()
+        XCTAssertTrue(tour.exists)
+        delete.click()
+        app.buttons["confirm-lodging-tour-delete"].click()
+        XCTAssertTrue(tour.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
     func testPhotoMapPopoverDeletesPhotoWithoutUpdateError() throws {
         continueAfterFailure = false
         let (app, directory) = try makeTestApp()
@@ -83,6 +174,57 @@ final class RoadTripAssistUITests: XCTestCase {
         XCTAssertTrue(text.contains("Startstadt"))
         app.buttons["Schließen"].click()
         XCTAssertTrue(details.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Erneut versuchen"].exists)
+    }
+
+    @MainActor
+    func testRoutingDiagnosticsShowsFailuresWhileNextRequestIsRunning() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-routing-stall", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.buttons["Automatische Berechnung aktivieren"].click()
+        app.buttons["Aktivieren"].click()
+        let button = app.buttons["routing-diagnostics"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        button.click()
+        let details = app.staticTexts["routing-diagnostics-details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        let showsPending = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value CONTAINS %@ AND value CONTAINS %@",
+                                   "Test-Routenfehler", "Aktuelle Anfrage: „Zwischenstadt A“"),
+            object: details
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [showsPending], timeout: 10), .completed)
+        let text = (details.value as? String) ?? details.label
+        XCTAssertTrue(text.contains("Zielstadt"))
+        XCTAssertTrue(text.contains("Verkehrsmittel: Fahren"))
+        app.buttons["Schließen"].click()
+        app.buttons["Automatische Berechnung pausieren"].click()
+        app.buttons["routing-diagnostics"].click()
+        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        XCTAssertTrue(((details.value as? String) ?? details.label).contains("Berechnung pausiert"))
+    }
+
+    @MainActor
+    func testRoutingDiagnosticsStaysOpenWhenCalculationFails() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-routing-transition", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.buttons["Automatische Berechnung aktivieren"].click()
+        app.buttons["Aktivieren"].click()
+        let button = app.buttons["routing-diagnostics"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        button.click()
+        let details = app.staticTexts["routing-diagnostics-details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        let failed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Code: -1001"),
+                                              object: details)
+        XCTAssertEqual(XCTWaiter.wait(for: [failed], timeout: 15), .completed)
+        XCTAssertTrue(details.exists)
         XCTAssertTrue(app.buttons["Erneut versuchen"].exists)
     }
 
@@ -179,6 +321,64 @@ final class RoadTripAssistUITests: XCTestCase {
         assertValue("View Point", of: stageWaypoint)
         stageWaypoint.click()
         assertValue("00:45", of: app.textFields["waypoint-stay"])
+    }
+
+    @MainActor
+    func testLodgingTourWaypointShowsAndEditsCategoryAndStay() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-poi", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        let list = app.descendants(matching: .any)["stage-list"].firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        list.scroll(byDeltaX: 0, deltaY: -180)
+        app.buttons["toggle-overnight-2"].click()
+        app.buttons["add-round-trip-1"].click()
+        let map = app.descendants(matching: .any)["planner-map"].firstMatch
+        map.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        let addTour = app.buttons["add-map-poi-tour"]
+        XCTAssertTrue(addTour.waitForExistence(timeout: 5))
+        addTour.click()
+
+        let stop = app.textFields["lodging-tour-stop-1"]
+        assertValue("Testcafe", of: stop)
+        stop.click()
+        stop.typeKey("a", modifierFlags: .command)
+        stop.typeText("Zielstadt")
+        list.scroll(byDeltaX: 0, deltaY: -250)
+        let result = app.buttons["lodging-tour-edit-search-result-0"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        result.click()
+        assertValue("Zielstadt", of: stop)
+        let summary = app.descendants(matching: .any)["lodging-tour-waypoint-summary-1"].firstMatch
+        XCTAssertTrue(summary.label.contains("Keine Kategorie"))
+        XCTAssertTrue(summary.label.contains("00:00"))
+        app.buttons["lodging-tour-waypoint-details-1"].click()
+        let category = app.popUpButtons["waypoint-category"]
+        XCTAssertTrue(category.waitForExistence(timeout: 5))
+        category.click()
+        app.menuItems["View Point"].click()
+        let stay = app.textFields["waypoint-stay"]
+        stay.click()
+        stay.typeKey("a", modifierFlags: .command)
+        stay.typeText("00:45")
+        app.radioButtons["Route"].click()
+        let keepEditing = app.buttons["Weiter bearbeiten"]
+        XCTAssertTrue(keepEditing.waitForExistence(timeout: 5))
+        keepEditing.click()
+        assertValue("00:45", of: stay)
+        app.buttons["save-waypoint-details"].click()
+        XCTAssertTrue(summary.label.contains("View Point"))
+        XCTAssertTrue(summary.label.contains("00:45"))
+        app.terminate()
+
+        launchPlanner(app)
+        app.radioButtons["Route"].click()
+        assertValue("Zielstadt", of: stop)
+        XCTAssertTrue(summary.label.contains("View Point"))
+        XCTAssertTrue(summary.label.contains("00:45"))
     }
 
     @MainActor
@@ -598,6 +798,88 @@ final class RoadTripAssistUITests: XCTestCase {
     }
 
     @MainActor
+    func testMapPOICanBeAddedToTourAndMainJourneyIndependently() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-poi", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        let list = app.descendants(matching: .any)["stage-list"].firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        list.scroll(byDeltaX: 0, deltaY: -180)
+        app.buttons["toggle-overnight-2"].click()
+        app.buttons["add-round-trip-1"].click()
+        let tour = app.descendants(matching: .any)["lodging-tour-card"].firstMatch
+        XCTAssertTrue(tour.waitForExistence(timeout: 5))
+
+        let map = app.descendants(matching: .any)["planner-map"].firstMatch
+        map.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        let addMain = app.buttons["add-map-poi"]
+        let addTour = app.buttons["add-map-poi-tour"]
+        XCTAssertTrue(addTour.waitForExistence(timeout: 5))
+        XCTAssertTrue(addMain.isEnabled)
+        addTour.click()
+        XCTAssertFalse(addTour.isEnabled)
+        XCTAssertTrue(addMain.isEnabled)
+
+        tour.buttons["lodging-tour-focus-stop-1"].click()
+        map.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        XCTAssertTrue(addMain.waitForExistence(timeout: 5))
+        XCTAssertTrue(addMain.isEnabled)
+        XCTAssertFalse(addTour.isEnabled)
+        addMain.click()
+        XCTAssertFalse(addMain.isEnabled)
+        app.terminate()
+
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        XCTAssertTrue(tour.waitForExistence(timeout: 5))
+        assertValue("Testcafe", of: tour.textFields["lodging-tour-stop-1"])
+        app.radioButtons["Route"].click()
+        assertValue("Testcafe", of: app.textFields["waypoint-stop-2"])
+    }
+
+    @MainActor
+    func testMapPOIChoosesAmongMultipleLodgingTours() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-poi", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        let list = app.descendants(matching: .any)["stage-list"].firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        list.scroll(byDeltaX: 0, deltaY: -180)
+        app.buttons["toggle-overnight-2"].click()
+        let add = app.buttons["add-round-trip-1"]
+        add.click()
+        add.click()
+        let tours = app.descendants(matching: .any).matching(identifier: "lodging-tour-card")
+        XCTAssertEqual(tours.count, 2)
+
+        let map = app.descendants(matching: .any)["planner-map"].firstMatch
+        map.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        let chooseTour = app.descendants(matching: .any)["add-map-poi-tour"].firstMatch
+        XCTAssertTrue(chooseTour.waitForExistence(timeout: 5))
+        chooseTour.click()
+        app.menuItems["Rundtour 2 ab Zwischenstadt A"].click()
+        XCTAssertFalse(tours.element(boundBy: 0).textFields["lodging-tour-stop-1"].exists)
+        assertValue("Testcafe", of: tours.element(boundBy: 1).textFields["lodging-tour-stop-1"])
+        chooseTour.click()
+        XCTAssertFalse(app.menuItems["Rundtour 2 ab Zwischenstadt A – bereits enthalten"].isEnabled)
+        XCTAssertTrue(app.menuItems["Rundtour 1 ab Zwischenstadt A"].isEnabled)
+        app.menuItems["Rundtour 1 ab Zwischenstadt A"].click()
+        assertValue("Testcafe", of: tours.element(boundBy: 0).textFields["lodging-tour-stop-1"])
+        app.terminate()
+        launchPlanner(app)
+        app.radioButtons["Etappen"].click()
+        XCTAssertEqual(tours.count, 2)
+        assertValue("Testcafe", of: tours.element(boundBy: 0).textFields["lodging-tour-stop-1"])
+        assertValue("Testcafe", of: tours.element(boundBy: 1).textFields["lodging-tour-stop-1"])
+    }
+
+    @MainActor
     func testMapPOIDetailsAndAddToRoute() throws {
         continueAfterFailure = false
         let (app, _) = try makeTestApp()
@@ -854,11 +1136,12 @@ final class RoadTripAssistUITests: XCTestCase {
         result.click()
     }
 
-    private func assertHandoff(in directory: URL, name: String, longitude: String) throws {
+    private func assertHandoff(in directory: URL, name: String, longitude: String,
+                               mode: String = MKLaunchOptionsDirectionsModeDriving) throws {
         let data = try Data(contentsOf: directory.appendingPathComponent("maps-handoff.json"))
         let record = try JSONDecoder().decode([String: String].self, from: data)
         XCTAssertEqual(record, ["name": name, "longitude": longitude, "latitude": "50.0",
-                                "mode": MKLaunchOptionsDirectionsModeDriving])
+                                "mode": mode])
     }
 
     @MainActor

@@ -1,8 +1,8 @@
 # RoadTripAssist
 
 Native macOS road-trip planner with local trip management, MapKit place
-search, fixed-endpoint waypoint ordering by estimated driving time, and
-stage planning with overnight stops and time budgets.
+search, fixed-endpoint waypoint ordering by estimated travel time, and
+stage planning with overnight stops, round trips and time budgets.
 
 ## Run
 
@@ -44,8 +44,8 @@ clearing a waypoint category. They also verify that a route card displays and
 edits a waypoint's category and stay duration, and that the saved values appear
 in the stage list. Photo tests cover EXIF date/GPS parsing, geolocation-based
 assignment suggestions, local copy and persistence, and persistent photo
-rotation; a UI test opens the photo manager for a selected trip. The POI tests use the real map view with
-fixed search results. The overnight-search test compares map screenshots at
+rotation; a UI test opens the photo manager for a selected trip. The POI tests
+use the real map view with fixed search results. The overnight-search test compares map screenshots at
 the same zoom to check for a visible orange outline and an untinted interior.
 Swift tests cover marker color and symbol precedence; the UI tests do not
 visually verify every marker color or symbol.
@@ -54,9 +54,18 @@ and removes it again. Swift tests additionally check legacy data, per-trip
 storage and selection, MapKit request construction, cache invalidation,
 optimization, missing legs and parking checks. Photo tests also cover reuse of
 an existing waypoint and restoration of media and metadata after a failed
-save. A UI regression test exercises deletion from the photo map popover. In
-the latest UI run, 17 tests passed and the optional Maps smoke test was skipped;
-one other test failed to launch the app but passed when retried separately.
+save. Swift tests additionally cover separate lodging-tour routing and
+totals, multiple tours per lodging, endpoint synchronization, legacy migration
+and photo/transit assignments, including adding a photo location to a selected
+tour instead of reusing a nearby main-journey waypoint. UI regression tests exercise deletion from the
+photo map popover, round-trip creation, deletion and persistence, travel modes,
+transit handoff, and changing the trip type. They also check choosing a main
+journey or one of several tours for a map POI, preventing duplicates per
+context, reopening the trip, editing tour waypoint details, and protecting
+unsaved tour edits.
+The latest full Swift run executed 101 tests with no failures; four optional
+live MapKit tests were skipped. The latest full UI run executed 26 tests with
+no failures; the optional Apple Maps smoke test was skipped.
 The system Photos and file pickers and every hover animation are not covered by
 these automated tests.
 On multi-monitor setups, screenshot tests move their test window to the main
@@ -80,10 +89,13 @@ individually:
 ```sh
 ROADTRIP_LIVE_MAPKIT=1 swift test --filter testLiveBayreuthOsloProgress
 ROADTRIP_LIVE_MAPKIT=1 swift test --filter testLiveBayreuthMilanProgress
+ROADTRIP_LIVE_MAPKIT=1 swift test --filter testLiveWalkingRoundTripInBerlin
 ```
 
 The Bayreuth–Milan benchmark visits Prague, Innsbruck, Salzburg, Passau,
 Garmisch-Partenkirchen, and Bolzano before reaching Milan.
+The walking check requests a round trip around Berlin landmarks, both without
+a departure date and with a future date.
 
 To verify that the nearby-place search returns Unbound Coffee in Innsbruck:
 
@@ -99,8 +111,8 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   routes and the opt-in to automatic routing are not stored. The app reopens
   the last selected trip; that selection is saved separately in
   `selected-trip.json`.
-- Search, map display, and driving directions use Apple MapKit and require an
-  internet connection. Search text, clicked map coordinates for nearby places,
+- Search, map display, walking and driving directions, and transit estimates
+  use Apple MapKit and require an internet connection. Search text, clicked map coordinates for nearby places,
   route coordinates and any selected departure date are sent to Apple.
 - When creating a trip or using "Bearbeiten", enable "Reisestart festlegen"
   to choose a start date and time; disable it to remove the date. The sidebar
@@ -109,13 +121,72 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   time zone changes. Existing trips have no departure date until one is set.
   Without one, MapKit receives no departure date and uses its own defaults.
 - MapKit receives the same trip departure date and time for every current and
-  alternative driving connection, including parking-access checks. This is a
-  planning approximation: travel times, waypoint stays and overnight stops do
+  alternative connection, including transit estimates and parking-access
+  checks. This is a planning approximation: travel times, waypoint stays and overnight stops do
   not advance the departure time of later legs. Changing or removing the date
   clears cached legs and route suggestions and recalculates the current route
   if automatic routing is enabled; optimization must be started again.
   MapKit may use the date to adjust its estimates, but does not guarantee a
   route or ignore current road closures. Check actual conditions before travel.
+- Choose "Start–Ziel" or "Rundtour" when creating or editing a trip. A standalone
+  round trip returns to its start and has exactly one stage. In "Etappen",
+  mark a stop or destination as an overnight stop and use "Rundtour hinzufügen"
+  to attach one or more independent tours to it. Their inline cards appear
+  under the lodging in the route and stage views. Each tour has its own
+  waypoints, travel mode, budget, transit markings, routing controls and
+  diagnostics. Tour waypoint cards use the same editable place, category and
+  stay-duration presentation as the main journey. Click a waypoint heading to
+  focus it on the map; change the place by editing the name and selecting a
+  search result. Calculate and optimize the main journey and each tour separately.
+  The combined total is displayed only when every route is complete; it includes
+  main-journey stays and intermediate tour stays without counting the lodging
+  stay a second time. A selected map POI can be added to the main journey or
+  to a chosen tour, regardless of which route is displayed; each route prevents
+  its own duplicates. The same place can therefore occur in different routes.
+  Use the tour's map button to show it alone, or "Hauptreise und Rundtouren"
+  to return to the combined map, which draws each route separately.
+  Photo assignment and photo waypoint insertion also distinguish the main
+  journey from each tour.
+  Changing the lodging moves its tours' endpoints after confirmation; remove
+  its tours before deleting it. A tour cannot contain another overnight
+  boundary. Photos remain when a tour is removed, but assignments to removed
+  points may no longer resolve. Removing a tour waypoint is immediate unless
+  transit markings require confirmation; deleting the whole tour requires
+  confirmation.
+- After confirmation, converting a start–destination trip to a standalone
+  round trip combines the main journey and all lodging-tour waypoints in their
+  existing order. The previous destination becomes a stop; all intermediate
+  overnight boundaries are removed, the first stage's mode is used, explicitly
+  set budgets are added, and old budget-overrun confirmations are reset.
+  Transit markings for still-adjacent directed pairs are kept, but are inactive
+  in driving mode. Converting back removes the return to the start and makes
+  the last stop the destination. Assignments and transit markings on a removed
+  return leg may no longer be valid. If tour-start details cannot be merged
+  safely, conversion fails without modifying the saved trip.
+- On loading older trips, embedded lodging tours are extracted and standalone
+  round trips with multiple stages are merged. Only explicit budgets are
+  added, and the first stage's mode is used; a notice identifies missing budgets
+  and reset confirmations.
+  Confirmed and suggested photo assignments are migrated where unambiguous;
+  unresolved assignments remain intact and are reported for review. Migration
+  is written atomically, and ambiguous or invalid legacy data is not overwritten.
+- Choose "Fahren" or "Zu Fuß" for each stage in "Routeneinstellungen" or
+  "Etappen". Older trips default to driving. In a walking stage, mark an
+  individual directed connection as ÖPNV. MapKit only provides a transit
+  time and distance estimate; the dotted line is straight-line guidance, not
+  a transit route. Opening the destination in Apple Maps requests transit
+  directions, where the actual itinerary must be checked. Availability
+  depends on Apple's regional data. Missing estimates are reported as missing
+  connections; other successful legs remain visible, without a complete total.
+  Transit estimates use the same trip start time for all legs and are not a
+  coordinated timetable. Changing to driving temporarily disables transit
+  markings; changing back restores them if the points remain adjacent.
+  Reordering, inserting or deleting points removes markings for pairs that are
+  no longer adjacent. The app warns before a change and before accepting an
+  optimization that removes markings. Optimization uses transit only for
+  marked directed pairs. A budget cutoff inside a transit leg cannot be
+  located on the map, and photo suggestions do not treat its dotted line as
+  the actual route.
 - The native split view contains the trip sidebar and map. The route and stage
   planner is shown in a resizable inspector; use the toolbar button to hide
   or reopen it. The selected place's floating details use Liquid Glass.
@@ -123,9 +194,13 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   remain visible. MapKit searches within a zoom-dependent radius of at most
   60 m and highlights the closest match, which may not be the clicked place.
   Check the name and available details, then use "Zur Route hinzufügen" to
-  add it as an intermediate stop. "Als Übernachtung hinzufügen" adds it
-  as a stop and ends a stage there in one step. Neither button adds a
-  duplicate. With no match, nothing is added. In manual mode, when the
+  add it as an intermediate stop. If lodging tours exist, choose "Zur Hauptreise
+  hinzufügen" or "Zur Rundtour hinzufügen"; the latter offers a tour selection
+  when there is more than one. "Als Übernachtung hinzufügen" adds it
+  to the main journey as a stop and ends a stage there in one step; when tours
+  exist the button explicitly names the main journey. Duplicate detection is
+  per route: a matching name (ignoring case and accents) within 50 m is
+  considered the same place. With no match, nothing is added. In manual mode, when the
   route already has overnight boundaries, or when adding a new overnight
   stop, the insertion gap is chosen by the smallest extra straight-line
   distance. This determines which stage gets the POI. Automatic ordering
@@ -147,7 +222,7 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   order on later edits. Accepting a faster suggestion also fixes it and persists
   that choice. Hover over the routing symbols for their descriptions.
 - Use the map button beside a waypoint to open that individual destination
-  in Apple Maps with driving directions. This does not transfer the entire trip
+  in Apple Maps with the incoming leg's mode. This does not transfer the entire trip
   or its intermediate stops; Apple Maps determines the route to that point.
 - Waypoints without a category use red map markers; categorized waypoints use
   green, except photo waypoints, which are purple until they have a stay
@@ -177,8 +252,11 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   on that location. Rotation
   is stored with the trip without changing the local image copy. With a route
   start and destination set, a photo location can be added as a waypoint and
-  assigned to that waypoint;
-  locations within 50 m of an existing waypoint reuse that waypoint.
+  assigned to that waypoint. In the photo manager, choose the main journey or
+  a specific tour when tours exist. A photo popup on an individually selected
+  tour adds to that tour. Only waypoints in the chosen context are considered
+  for reuse: an existing waypoint within 50 m is reused without changing its
+  details.
   GPS suggests a nearby waypoint (within 2 km), route segment (within 2 km), or
   stage (within 20 km of a waypoint). Suggestions are never applied
   automatically: confirm one or assign the photo manually. Captions and
@@ -187,7 +265,7 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   its coordinates are sent to Apple as part of the routing request. Map display
   also uses Apple MapKit. When offline HTML export is added, it must not expose
   GPS/EXIF coordinates unintentionally.
-- Opt into automatic routing to calculate the street route in the current
+- Opt into automatic routing to calculate connections in the current
   order after waypoint changes. For a selected trip, the "Reihenfolge
   optimieren" symbol remains visible next to the automatic-routing control;
   it is enabled when start,
@@ -198,8 +276,8 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   and lets you switch the map between them before acceptance. The info symbol
   opens the full suggested order and time saving. It offers one
   best-order proposal, not multiple road alternatives for each leg.
-  The optimizer minimizes estimated driving time, not distance. The app
-  groups rapid edits and shows the current step: calculating the street route,
+  The optimizer minimizes estimated travel time, not distance. The app
+  groups rapid edits and shows the current step: calculating the current route,
   fetching travel times for alternative legs, or comparing stop orders. Each
   MapKit step shows its own request count, and you can pause the calculation.
 - During or after optimization, use the "Alternative Verbindungen" symbol to
@@ -212,15 +290,15 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   multiple road options for the same connection. Selecting a stage limits the
   overlay to connections inside it. Waypoint or overnight-boundary changes
   clear the comparison; available results are kept if optimization fails.
-- Routing reuses directed legs between unchanged waypoints and the same
-  departure date in memory while the
+- Routing reuses directed legs between unchanged waypoints, the same
+  transport mode and departure date in memory while the
   planner is open. Inserting a waypoint into a fixed route needs only the two
   new adjoining legs if the remaining legs are cached. A separate optimization
   may require additional connections. Without overnight anchors, a fresh
-  five-stop plan needs six MapKit requests for its street route and up to 30
+  five-stop plan needs six MapKit requests for its current route and up to 30
   in total for exact optimization. MapKit may throttle requests. If any stage
   has more than 18 movable stops, optimization reports an error; the current
-  street route remains available. Cached legs have no expiry and may become
+  route remains available. Cached legs have no expiry and may become
   stale; they and the routing opt-in are not saved across app launches.
   Apple's conditions for optimization requests and in-memory reuse remain
   unresolved and must be checked before release; showing a proposal or
@@ -235,7 +313,10 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   consider a nearby parking place and walking the remaining distance. Click
   the concise failure message for a local diagnostic popover with affected
   connections, coordinates, available error domains, codes and underlying
-  errors. A missing MapKit explanation is explicitly identified; network errors
+  errors. While a calculation is running or paused, "Diagnose anzeigen" opens
+  the same popover: it updates with completed errors, the current request,
+  transport mode and elapsed time. A pending request may not yet have an error
+  to report. A missing MapKit explanation is explicitly identified; network errors
   and the app's timeout are distinguished when possible. Available current connections
   remain visible individually on the map even when other connections fail;
   no complete trip total is shown for an incomplete route. For an unavailable
@@ -255,15 +336,17 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
    marked. At an intermediate stop this splits or merges stages. The last
    stage always ends at the trip destination. Use "Etappe auf der Karte zeigen"
    for that stage alone or "Gesamtroute auf der Karte" to return to the whole
-   trip. Straight-line and driving-time optimization keep overnight
+   trip. Straight-line and travel-time optimization keep overnight
    boundaries fixed and reorder only within stages.
 2. **Enter details and budgets.** Click a waypoint row or its chevron to expand
    the inline editor for category, stay time, notes and rating, plus overnight
    and visit status for non-start points. Only one waypoint or stage-budget
-   editor is open at a time. Save or explicitly cancel the changes; collapsing
-   an editor, opening another, changing views or selecting or creating a trip
-   asks before discarding unsaved edits. Removing the edited waypoint or
-   deleting its trip warns that unsaved edits will be lost.
+   editor is open at a time. Save or explicitly cancel the changes. When an
+   action would discard unsaved edits, such as opening another editor, switching
+   from stages to the route view, or selecting or creating a trip, the app asks
+   first. Switching from route to stages retains the draft. Removing an edited
+   main-journey waypoint or deleting its trip warns that unsaved edits will be
+   lost; tour waypoint controls are disabled while a tour editor is open.
 
    Enter durations as `hh:mm`: `00:45` means 45 minutes and `00:00` means
    no stay. Set the optional default time budget for all stages (e.g. `06:30`)
@@ -276,10 +359,10 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
    overnight designation clears its override when the stages merge.
    The bed button is disabled for the waypoint currently being edited; change
    its overnight status in its details or close the editor first. "Etappenzeit"
-   adds driving and stay times without
+   adds travel and stay times without
    counting a shared overnight stop twice: its stay belongs to the stage
    that arrives there. Saved stay edits immediately update the stage time,
-   without refetching driving directions. If driving time is not yet available,
+   without refetching directions. If driving time is not yet available,
    the display reads e.g. "45 min + ausstehende Fahrzeit". The budget itself
    does not change.
 3. **Find an overnight stop near the budget point.** With a calculated road
@@ -300,8 +383,8 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
    waypoints and budget and arrives no later than the confirmed minute.
    A cutoff reached only at the already marked overnight stop itself
    does not need a search point.
-5. **Manage stops and progress.** The minus icon removes an intermediate stop
-   from the route only after confirmation; start and destination are protected.
+5. **Manage stops and progress.** In the main journey, the minus icon removes
+   an intermediate stop only after confirmation; start and destination are protected.
    Removing an overnight stop merges the adjoining stages. The map icon
    opens just that destination in Apple Maps, using the same button as in
    route planning. In "Reiseverlauf", you can open the next pending destination

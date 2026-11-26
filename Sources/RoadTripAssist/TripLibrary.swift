@@ -24,6 +24,22 @@ enum VisitStatus: String, Codable, CaseIterable {
     }
 }
 
+enum TravelMode: String, Codable, CaseIterable {
+    case driving, walking
+
+    var title: String {
+        switch self {
+        case .driving: "Fahren"
+        case .walking: "Zu Fuß"
+        }
+    }
+}
+
+struct TransitLeg: Codable, Hashable {
+    let from: RoadStop.ID
+    let to: RoadStop.ID
+}
+
 enum WaypointCategory: String, Codable, CaseIterable {
     case sightseeing, viewpoint, pause, hiking, navigation, photo
 
@@ -155,20 +171,33 @@ struct TripWaypoints: Codable {
     var manualOrder = false
     var details: [RoadStop.ID: WaypointDetails] = [:]
     var defaultStageBudgetMinutes: Int?
+    var stageModes: [RoadStop.ID: TravelMode]
+    var transitLegs: Set<TransitLeg>
+    var isRoundTrip: Bool
+    var roundTripAnchors: [RoadStop.ID: RoadStop.ID]
+    var lodgingTours: [LodgingTour]
 
     init(start: RoadStop? = nil, stops: [RoadStop] = [], destination: RoadStop? = nil,
          manualOrder: Bool = false, details: [RoadStop.ID: WaypointDetails] = [:],
-         defaultStageBudgetMinutes: Int? = nil) {
+         defaultStageBudgetMinutes: Int? = nil, stageModes: [RoadStop.ID: TravelMode] = [:],
+         transitLegs: Set<TransitLeg> = [], isRoundTrip: Bool = false,
+         roundTripAnchors: [RoadStop.ID: RoadStop.ID] = [:], lodgingTours: [LodgingTour] = []) {
         self.start = start
         self.stops = stops
         self.destination = destination
         self.manualOrder = manualOrder
         self.details = details
         self.defaultStageBudgetMinutes = defaultStageBudgetMinutes
+        self.stageModes = stageModes
+        self.transitLegs = transitLegs
+        self.isRoundTrip = isRoundTrip
+        self.roundTripAnchors = roundTripAnchors
+        self.lodgingTours = lodgingTours
     }
 
     private enum CodingKeys: String, CodingKey {
-        case start, stops, destination, manualOrder, details, defaultStageBudgetMinutes
+        case start, stops, destination, manualOrder, details, defaultStageBudgetMinutes, stageModes, transitLegs
+        case isRoundTrip, roundTripAnchors, lodgingTours
     }
 
     init(from decoder: Decoder) throws {
@@ -179,6 +208,23 @@ struct TripWaypoints: Codable {
         manualOrder = try container.decodeIfPresent(Bool.self, forKey: .manualOrder) ?? false
         details = try container.decodeIfPresent([RoadStop.ID: WaypointDetails].self, forKey: .details) ?? [:]
         defaultStageBudgetMinutes = try container.decodeIfPresent(Int.self, forKey: .defaultStageBudgetMinutes)
+        stageModes = try container.decodeIfPresent([RoadStop.ID: TravelMode].self, forKey: .stageModes) ?? [:]
+        transitLegs = try container.decodeIfPresent(Set<TransitLeg>.self, forKey: .transitLegs) ?? []
+        isRoundTrip = try container.decodeIfPresent(Bool.self, forKey: .isRoundTrip) ?? false
+        roundTripAnchors = try container.decodeIfPresent([RoadStop.ID: RoadStop.ID].self, forKey: .roundTripAnchors) ?? [:]
+        lodgingTours = try container.decodeIfPresent([LodgingTour].self, forKey: .lodgingTours) ?? []
+    }
+}
+
+struct LodgingTour: Identifiable, Codable {
+    let id: UUID
+    let anchorID: RoadStop.ID
+    var waypoints: TripWaypoints
+
+    init(id: UUID = UUID(), anchorID: RoadStop.ID, waypoints: TripWaypoints) {
+        self.id = id
+        self.anchorID = anchorID
+        self.waypoints = waypoints
     }
 }
 
@@ -189,19 +235,21 @@ struct RoadTrip: Identifiable, Codable {
     var waypoints = TripWaypoints()
     var photos: [TripPhoto] = []
     var departureDate: Date?
+    var migrationNotices: [String] = []
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, notes, waypoints, photos, departureDate
+        case id, name, notes, waypoints, photos, departureDate, migrationNotices
     }
 
     init(id: UUID = UUID(), name: String, notes: String, waypoints: TripWaypoints = TripWaypoints(),
-         photos: [TripPhoto] = [], departureDate: Date? = nil) {
+         photos: [TripPhoto] = [], departureDate: Date? = nil, migrationNotices: [String] = []) {
         self.id = id
         self.name = name
         self.notes = notes
         self.waypoints = waypoints
         self.photos = photos
         self.departureDate = departureDate
+        self.migrationNotices = migrationNotices
     }
 
     init(from decoder: Decoder) throws {
@@ -212,6 +260,362 @@ struct RoadTrip: Identifiable, Codable {
         waypoints = try container.decode(TripWaypoints.self, forKey: .waypoints)
         photos = try container.decodeIfPresent([TripPhoto].self, forKey: .photos) ?? []
         departureDate = try container.decodeIfPresent(Date.self, forKey: .departureDate)
+        migrationNotices = try container.decodeIfPresent([String].self, forKey: .migrationNotices) ?? []
+    }
+}
+
+enum RoundTripMigrationError: LocalizedError {
+    case invalidWaypoints
+    case budgetOverflow
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidWaypoints:
+            "Die Rundtour enthält uneindeutige Wegpunkte und kann nicht automatisch zusammengeführt werden."
+        case .budgetOverflow:
+            "Die Etappenbudgets der Rundtour sind zu groß, um sie zusammenzuführen."
+        }
+    }
+}
+
+private struct TripMigrationFailure: LocalizedError {
+    let tripName: String
+    let reason: String
+
+    var errorDescription: String? {
+        "Die Reise „\(tripName)“ konnte nicht sicher umgestellt werden: \(reason) Die gespeicherten Daten wurden nicht verändert."
+    }
+}
+
+enum RoundTripMigration {
+    private static func unresolvedPhotoCount(in trip: RoadTrip) -> Int {
+        let contexts = [trip.waypoints] + trip.waypoints.lodgingTours.map(\.waypoints)
+        var waypointIDs: Set<RoadStop.ID> = []
+        var stageIDs: Set<RoadStop.ID> = []
+        var pairs: Set<TransitLeg> = []
+        for context in contexts {
+            let points = [context.start].compactMap { $0 } + context.stops + [context.destination].compactMap { $0 }
+            waypointIDs.formUnion(points.map(\.id))
+            pairs.formUnion(zip(points, points.dropFirst()).map { TransitLeg(from: $0.id, to: $1.id) })
+            let anchors = Set(context.stops.filter { context.details[$0.id]?.overnight == true }.map(\.id))
+            stageIDs.formUnion(TripStage.ranges(in: points, anchors: anchors).map { points[$0.upperBound].id })
+        }
+        return trip.photos.filter { photo in
+            switch photo.assignment?.target {
+            case .waypoint(let id): !waypointIDs.contains(id)
+            case .stage(let id): !stageIDs.contains(id)
+            case .routeSegment(let from, let to): !pairs.contains(TransitLeg(from: from, to: to))
+            case nil: false
+            }
+        }.count
+    }
+
+    private static func appendPhotoWarning(to notice: inout String, trip: RoadTrip) {
+        let count = unresolvedPhotoCount(in: trip)
+        if count > 0 {
+            notice += " \(count) Fotozuordnung(en) konnten nicht eindeutig zugeordnet werden und sollten überprüft werden; die bisherigen Angaben bleiben erhalten."
+        }
+    }
+
+    static func convertToStandalone(_ trip: inout RoadTrip) throws -> String {
+        var merged = trip.waypoints
+        guard !merged.isRoundTrip, let start = merged.start, let destination = merged.destination else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        try validate(merged)
+        let main = [start] + merged.stops + [destination]
+        var combined: [RoadStop] = []
+        var pairMappings: [TransitLeg: TransitLeg] = [:]
+        var waypointMappings: [RoadStop.ID: RoadStop.ID] = [:]
+        for index in main.indices {
+            let point = main[index]
+            if index > 0 {
+                let previous = main[index - 1]
+                let previousOccurrence = combined[combined.count - 1]
+                if previous.id != previousOccurrence.id {
+                    pairMappings[TransitLeg(from: previous.id, to: point.id)] =
+                        TransitLeg(from: previousOccurrence.id, to: point.id)
+                }
+            }
+            combined.append(point)
+            for tour in merged.lodgingTours where tour.anchorID == point.id {
+                guard let tourStart = tour.waypoints.start, let tourEnd = tour.waypoints.destination else {
+                    throw RoundTripMigrationError.invalidWaypoints
+                }
+                guard tour.waypoints.details[tourStart.id] == nil
+                        || tour.waypoints.details[tourStart.id] == WaypointDetails() else {
+                    throw RoundTripMigrationError.invalidWaypoints
+                }
+                waypointMappings[tourStart.id] = combined[combined.count - 1].id
+                let first = tour.waypoints.stops.first ?? tourEnd
+                pairMappings[TransitLeg(from: tourStart.id, to: first.id)] =
+                    TransitLeg(from: combined[combined.count - 1].id, to: first.id)
+                combined.append(contentsOf: tour.waypoints.stops)
+                combined.append(tourEnd)
+                for (id, details) in tour.waypoints.details where id != tourStart.id { merged.details[id] = details }
+                for (id, mode) in tour.waypoints.stageModes { merged.stageModes[id] = mode }
+                merged.transitLegs.formUnion(tour.waypoints.transitLegs)
+                var endDetails = merged.details[tourEnd.id] ?? WaypointDetails()
+                endDetails.overnight = true
+                merged.details[tourEnd.id] = endDetails
+            }
+        }
+        var destinationDetails = merged.details[destination.id] ?? WaypointDetails()
+        destinationDetails.overnight = true
+        merged.details[destination.id] = destinationDetails
+        merged.transitLegs = Set(merged.transitLegs.map { pairMappings[$0] ?? $0 })
+        let newEnd = start.newOccurrence()
+        merged.stops = Array(combined.dropFirst())
+        merged.destination = newEnd
+        merged.isRoundTrip = true
+        merged.manualOrder = true
+        merged.lodgingTours = []
+        var photos = trip.photos
+        for index in photos.indices {
+            switch photos[index].assignment?.target {
+            case .waypoint(let id):
+                if let mapped = waypointMappings[id] { photos[index].assignment?.target = .waypoint(mapped) }
+            case .routeSegment(let from, let to):
+                if let mapped = pairMappings[TransitLeg(from: from, to: to)] {
+                    photos[index].assignment?.target = .routeSegment(from: mapped.from, to: mapped.to)
+                }
+            default:
+                break
+            }
+        }
+        var converted = trip
+        converted.waypoints = merged
+        converted.photos = photos
+        let notice = try mergeStandalone(&converted)
+        try validate(converted.waypoints)
+        trip = converted
+        return notice ?? "Die Reise wurde zu einer Rundtour zusammengeführt."
+    }
+
+    static func validate(_ waypoints: TripWaypoints) throws {
+        guard !waypoints.isRoundTrip || (waypoints.lodgingTours.isEmpty && waypoints.roundTripAnchors.isEmpty
+            && waypoints.stops.allSatisfy({ waypoints.details[$0.id]?.overnight != true })) else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        guard waypoints.lodgingTours.isEmpty || (waypoints.start != nil && waypoints.destination != nil) else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        let main = [waypoints.start].compactMap { $0 } + waypoints.stops
+            + [waypoints.destination].compactMap { $0 }
+        var ids = Set(main.map(\.id))
+        guard ids.count == main.count,
+              Set(waypoints.lodgingTours.map(\.id)).count == waypoints.lodgingTours.count else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        for tour in waypoints.lodgingTours {
+            guard let anchor = main.first(where: { $0.id == tour.anchorID }),
+                  waypoints.details[anchor.id]?.overnight == true,
+                  tour.waypoints.isRoundTrip, tour.waypoints.lodgingTours.isEmpty,
+                  tour.waypoints.roundTripAnchors.isEmpty,
+                  let start = tour.waypoints.start, let end = tour.waypoints.destination,
+                  start.distance(to: anchor) < 1, end.distance(to: anchor) < 1,
+                  start.name == anchor.name, end.name == anchor.name,
+                  start.subtitle == anchor.subtitle, end.subtitle == anchor.subtitle,
+                  tour.waypoints.stops.allSatisfy({ tour.waypoints.details[$0.id]?.overnight != true }) else {
+                throw RoundTripMigrationError.invalidWaypoints
+            }
+            for point in [start] + tour.waypoints.stops + [end] {
+                guard ids.insert(point.id).inserted else { throw RoundTripMigrationError.invalidWaypoints }
+            }
+        }
+    }
+
+    static func extractLodgingTours(_ trip: inout RoadTrip) throws -> String? {
+        var waypoints = trip.waypoints
+        guard !waypoints.isRoundTrip, !waypoints.roundTripAnchors.isEmpty else { return nil }
+        guard waypoints.lodgingTours.isEmpty, let start = waypoints.start,
+              let destination = waypoints.destination else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        let points = [start] + waypoints.stops + [destination]
+        guard Set(points.map(\.id)).count == points.count else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        let anchors = Set(waypoints.stops.filter { waypoints.details[$0.id]?.overnight == true }.map(\.id))
+        let ranges = TripStage.ranges(in: points, anchors: anchors)
+        let tourRanges = ranges.filter { waypoints.roundTripAnchors[points[$0.upperBound].id] != nil }
+        guard tourRanges.count == waypoints.roundTripAnchors.count else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        var tours: [LodgingTour] = []
+        var removedIndices: Set<Int> = []
+        var pairMappings: [TransitLeg: TransitLeg] = [:]
+        var resetOverruns = false
+        for range in tourRanges {
+            let oldStart = points[range.lowerBound]
+            let end = points[range.upperBound]
+            guard let rootID = waypoints.roundTripAnchors[end.id],
+                  let rootIndex = points.firstIndex(where: { $0.id == rootID }),
+                  rootIndex <= range.lowerBound,
+                  (oldStart.id == rootID || waypoints.roundTripAnchors[oldStart.id] == rootID),
+                  waypoints.details[rootID]?.overnight == true,
+                  points[rootIndex].distance(to: end) < 1,
+                  points[rootIndex].distance(to: oldStart) < 1,
+                  points[rootIndex].name == end.name, points[rootIndex].name == oldStart.name,
+                  points[rootIndex].subtitle == end.subtitle, points[rootIndex].subtitle == oldStart.subtitle else {
+                throw RoundTripMigrationError.invalidWaypoints
+            }
+            let newStart = oldStart.newOccurrence()
+            let tourStops = Array(points[(range.lowerBound + 1)..<range.upperBound])
+            let tourIDs = Set((tourStops + [end]).map(\.id))
+            var tourDetails = waypoints.details.filter { tourIDs.contains($0.key) }
+            if tourDetails[end.id]?.acceptedBudgetOverrun != nil {
+                resetOverruns = true
+                tourDetails[end.id]?.acceptedBudgetOverrun = nil
+            }
+            let oldFirstPair = TransitLeg(from: oldStart.id, to: points[range.lowerBound + 1].id)
+            let newFirstPair = TransitLeg(from: newStart.id, to: oldFirstPair.to)
+            pairMappings[oldFirstPair] = newFirstPair
+            let localPairs = Set(zip(Array(points[range]), Array(points[range].dropFirst())).map {
+                TransitLeg(from: $0.id, to: $1.id)
+            })
+            var tourTransit = waypoints.transitLegs.intersection(localPairs)
+            if tourTransit.remove(oldFirstPair) != nil { tourTransit.insert(newFirstPair) }
+            let tour = TripWaypoints(start: newStart, stops: tourStops, destination: end,
+                                     manualOrder: true, details: tourDetails,
+                                     defaultStageBudgetMinutes: waypoints.defaultStageBudgetMinutes,
+                                     stageModes: waypoints.stageModes.filter { tourIDs.contains($0.key) },
+                                     transitLegs: tourTransit, isRoundTrip: true)
+            tours.append(LodgingTour(anchorID: rootID, waypoints: tour))
+            removedIndices.formUnion((range.lowerBound + 1)...range.upperBound)
+        }
+        let mainIndices = points.indices.filter { !removedIndices.contains($0) }
+        guard mainIndices.count >= 2, let lastIndex = mainIndices.last, mainIndices.first == 0 else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        for (previous, next) in zip(mainIndices, mainIndices.dropFirst()) where next > previous + 1 {
+            let oldPair = TransitLeg(from: points[next - 1].id, to: points[next].id)
+            pairMappings[oldPair] = TransitLeg(from: points[previous].id, to: points[next].id)
+        }
+        let mainPoints = mainIndices.map { points[$0] }
+        guard lastIndex == points.count - 1 || waypoints.roundTripAnchors[destination.id] == mainPoints.last?.id else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        waypoints.destination = mainPoints.last
+        waypoints.stops = Array(mainPoints.dropFirst().dropLast())
+        let removedIDs = Set(removedIndices.map { points[$0].id })
+        waypoints.details = waypoints.details.filter { !removedIDs.contains($0.key) }
+        waypoints.stageModes = waypoints.stageModes.filter { !removedIDs.contains($0.key) }
+        let mainAnchors = Set(waypoints.stops.filter { waypoints.details[$0.id]?.overnight == true }.map(\.id))
+        for range in TripStage.ranges(in: mainPoints, anchors: mainAnchors) {
+            let endID = mainPoints[range.upperBound].id
+            guard let oldRange = ranges.first(where: { points[$0.upperBound].id == endID }),
+                  points[oldRange.lowerBound].id != mainPoints[range.lowerBound].id,
+                  waypoints.details[endID]?.acceptedBudgetOverrun != nil else { continue }
+            waypoints.details[endID]?.acceptedBudgetOverrun = nil
+            resetOverruns = true
+        }
+        let mainPairs = Set(zip(mainPoints, mainPoints.dropFirst()).map { TransitLeg(from: $0.id, to: $1.id) })
+        let previousTransit = waypoints.transitLegs
+        waypoints.transitLegs = Set(previousTransit.compactMap { old in
+            let mapped = pairMappings[old] ?? old
+            return mainPairs.contains(mapped) ? mapped : nil
+        })
+        waypoints.roundTripAnchors = [:]
+        waypoints.lodgingTours = tours
+
+        var photos = trip.photos
+        for index in photos.indices {
+            guard case .routeSegment(let from, let to)? = photos[index].assignment?.target,
+                  let mapped = pairMappings[TransitLeg(from: from, to: to)] else { continue }
+            photos[index].assignment?.target = .routeSegment(from: mapped.from, to: mapped.to)
+        }
+        trip.waypoints = waypoints
+        trip.photos = photos
+        var notice = "\(tours.count) Unterkunftstour(en) wurden von der Hauptreise getrennt."
+        let migratedTransitCount = waypoints.transitLegs.count + tours.reduce(0) { $0 + $1.waypoints.transitLegs.count }
+        if migratedTransitCount < previousTransit.count {
+            notice += " \(previousTransit.count - migratedTransitCount) nicht mehr benachbarte ÖPNV-Markierung(en) wurden entfernt."
+        }
+        if resetOverruns {
+            notice += " Frühere Bestätigungen von Budgetüberschreitungen wurden zurückgesetzt."
+        }
+        appendPhotoWarning(to: &notice, trip: trip)
+        return notice
+    }
+
+    /// Returns the migration notice, or nil if no merge was necessary.
+    static func mergeStandalone(_ trip: inout RoadTrip) throws -> String? {
+        var waypoints = trip.waypoints
+        guard waypoints.isRoundTrip else { return nil }
+        guard let start = waypoints.start, let destination = waypoints.destination else {
+            if waypoints.roundTripAnchors.isEmpty { return nil }
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        let points = [start] + waypoints.stops + [destination]
+        guard Set(points.map(\.id)).count == points.count,
+              start.distance(to: destination) < 1,
+              waypoints.lodgingTours.isEmpty else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        let anchors = Set(waypoints.stops.filter { waypoints.details[$0.id]?.overnight == true }.map(\.id))
+        let ranges = TripStage.ranges(in: points, anchors: anchors)
+        guard ranges.count > 1 || !waypoints.roundTripAnchors.isEmpty else { return nil }
+        let ends = ranges.map { points[$0.upperBound].id }
+        let stageIDs = Set(ends)
+        guard waypoints.stageModes.keys.allSatisfy(stageIDs.contains),
+              waypoints.roundTripAnchors.allSatisfy({ endID, rootID in
+                  guard stageIDs.contains(endID),
+                        let endIndex = points.firstIndex(where: { $0.id == endID }),
+                        let rootIndex = points.firstIndex(where: { $0.id == rootID }),
+                        rootIndex < endIndex else { return false }
+                  return points[rootIndex].distance(to: points[endIndex]) < 1
+              }) else {
+            throw RoundTripMigrationError.invalidWaypoints
+        }
+        let budgets = ends.compactMap { waypoints.details[$0]?.stageBudgetMinutes }
+        var totalBudget = 0
+        for budget in budgets {
+            let (sum, overflow) = totalBudget.addingReportingOverflow(budget)
+            guard !overflow else { throw RoundTripMigrationError.budgetOverflow }
+            totalBudget = sum
+        }
+        let firstMode = waypoints.stageModes[ends[0]] ?? .driving
+        let hadAcceptedOverruns = ends.contains { waypoints.details[$0]?.acceptedBudgetOverrun != nil }
+        for stop in waypoints.stops {
+            guard var details = waypoints.details[stop.id] else { continue }
+            details.overnight = false
+            if ends.contains(stop.id) {
+                details.stageBudgetMinutes = nil
+                details.acceptedBudgetOverrun = nil
+            }
+            waypoints.details[stop.id] = details
+        }
+        var endDetails = waypoints.details[destination.id] ?? WaypointDetails()
+        endDetails.stageBudgetMinutes = budgets.isEmpty ? nil : totalBudget
+        endDetails.acceptedBudgetOverrun = nil
+        waypoints.details[destination.id] = endDetails
+        waypoints.stageModes = [destination.id: firstMode]
+        waypoints.roundTripAnchors = [:]
+        let pairs = Set(zip(points, points.dropFirst()).map { TransitLeg(from: $0.id, to: $1.id) })
+        let removedTransit = waypoints.transitLegs.subtracting(pairs).count
+        waypoints.transitLegs.formIntersection(pairs)
+
+        var photos = trip.photos
+        for index in photos.indices {
+            if case .stage(let id)? = photos[index].assignment?.target, stageIDs.contains(id) {
+                photos[index].assignment?.target = .stage(destination.id)
+            }
+        }
+        var notice = "Die Rundtour wurde zu einer Etappe zusammengeführt. Der Modus der ersten Etappe wurde übernommen."
+        if budgets.count < ends.count {
+            notice += " Nicht alle Etappen hatten ein eigenes Budget; nur vorhandene Budgets wurden addiert."
+        }
+        if hadAcceptedOverruns {
+            notice += " Frühere Bestätigungen von Budgetüberschreitungen wurden zurückgesetzt."
+        }
+        if removedTransit > 0 {
+            notice += " \(removedTransit) nicht mehr benachbarte ÖPNV-Markierung(en) wurden entfernt."
+        }
+        trip.waypoints = waypoints
+        trip.photos = photos
+        appendPhotoWarning(to: &notice, trip: trip)
+        return notice
     }
 }
 
@@ -283,8 +687,44 @@ final class TripLibrary: ObservableObject {
         reload()
         self.planner.onWaypointsChanged = { [weak self] waypoints in
             guard let self, let index = self.trips.firstIndex(where: { $0.id == self.selectedID }) else { return }
+            Self.preserveSegmentAssignments(in: &self.trips[index], after: waypoints)
             self.trips[index].waypoints = waypoints
             self.save()
+        }
+    }
+
+    private static func preserveSegmentAssignments(in trip: inout RoadTrip, after updated: TripWaypoints) {
+        func firstPairs(_ waypoints: TripWaypoints) -> [RoadStop.ID: TransitLeg] {
+            guard let start = waypoints.start, let destination = waypoints.destination else { return [:] }
+            let points = [start] + waypoints.stops + [destination]
+            let anchors = Set(waypoints.stops.filter { waypoints.details[$0.id]?.overnight == true }.map(\.id))
+            return Dictionary(uniqueKeysWithValues: TripStage.ranges(in: points, anchors: anchors).map { range in
+                (points[range.upperBound].id,
+                 TransitLeg(from: points[range.lowerBound].id, to: points[range.lowerBound + 1].id))
+            })
+        }
+        let previous = trip.waypoints
+        let oldPairs = firstPairs(previous)
+        let newPairs = firstPairs(updated)
+        if previous.isRoundTrip != updated.isRoundTrip,
+           let oldEnd = previous.destination?.id, let newEnd = updated.destination?.id,
+           oldPairs[oldEnd] != nil, newPairs[newEnd] != nil,
+           newPairs[oldEnd] == nil, oldPairs[newEnd] == nil {
+            for index in trip.photos.indices {
+                if trip.photos[index].assignment?.target == .stage(oldEnd) {
+                    trip.photos[index].assignment?.target = .stage(newEnd)
+                }
+            }
+        }
+        for (stageID, old) in oldPairs {
+            guard let new = newPairs[stageID], old.from != new.from, old.to == new.to,
+                  (previous.roundTripAnchors[old.from] ?? old.from)
+                    == (updated.roundTripAnchors[new.from] ?? new.from) else { continue }
+            for index in trip.photos.indices {
+                guard case .routeSegment(let from, let to)? = trip.photos[index].assignment?.target,
+                      from == old.from, to == old.to else { continue }
+                trip.photos[index].assignment?.target = .routeSegment(from: new.from, to: new.to)
+            }
         }
     }
 
@@ -301,20 +741,55 @@ final class TripLibrary: ObservableObject {
 
     func updateTrip(id: RoadTrip.ID?, name: String, notes: String) {
         updateTrip(id: id, name: name, notes: notes,
-                   departureDate: trips.first(where: { $0.id == id })?.departureDate)
+                   departureDate: trips.first(where: { $0.id == id })?.departureDate,
+                   isRoundTrip: trips.first(where: { $0.id == id })?.waypoints.isRoundTrip ?? false)
     }
 
-    func updateTrip(id: RoadTrip.ID?, name: String, notes: String, departureDate: Date?) {
+    func updateTrip(id: RoadTrip.ID?, name: String, notes: String, departureDate: Date?,
+                    isRoundTrip: Bool? = nil) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard loadError == nil, !name.isEmpty else { return }
         if let id {
             guard let index = trips.firstIndex(where: { $0.id == id }) else { return }
+            let roundTrip = isRoundTrip ?? trips[index].waypoints.isRoundTrip
+            if roundTrip && !trips[index].waypoints.isRoundTrip,
+               trips[index].waypoints.start != nil, trips[index].waypoints.destination != nil {
+                var converted = trips[index]
+                do {
+                    let notice = try RoundTripMigration.convertToStandalone(&converted)
+                    converted.name = name
+                    converted.notes = notes
+                    converted.departureDate = departureDate
+                    converted.migrationNotices.append(notice)
+                    trips[index] = converted
+                    if id == selectedID {
+                        planner.loadWaypoints(converted.waypoints, departureDate: departureDate)
+                    }
+                    save()
+                } catch {
+                    saveError = error.localizedDescription
+                }
+                return
+            }
             trips[index].name = name
             trips[index].notes = notes
             trips[index].departureDate = departureDate
-            if id == selectedID { planner.setDepartureDate(departureDate) }
+            if id == selectedID {
+                planner.setRoundTrip(roundTrip)
+                planner.setDepartureDate(departureDate)
+            } else if trips[index].waypoints.isRoundTrip != roundTrip {
+                let temporaryPlanner = TripPlannerViewModel()
+                temporaryPlanner.loadWaypoints(trips[index].waypoints, departureDate: departureDate)
+                temporaryPlanner.onWaypointsChanged = { [weak self] waypoints in
+                    guard let self, let index = self.trips.firstIndex(where: { $0.id == id }) else { return }
+                    Self.preserveSegmentAssignments(in: &self.trips[index], after: waypoints)
+                    self.trips[index].waypoints = waypoints
+                }
+                temporaryPlanner.setRoundTrip(roundTrip)
+            }
         } else {
-            let trip = RoadTrip(name: name, notes: notes, departureDate: departureDate)
+            let trip = RoadTrip(name: name, notes: notes, waypoints: TripWaypoints(isRoundTrip: isRoundTrip ?? false),
+                                departureDate: departureDate)
             trips.append(trip)
             select(trip.id)
         }
@@ -353,8 +828,11 @@ final class TripLibrary: ObservableObject {
         let fileExtension = Self.safeImageExtension(from: originalName)
         let suggestion: PhotoAssignmentTarget?
         if let coordinate = metadata.coordinate, selectedID == tripID {
-            suggestion = PhotoAssignmentSuggester.suggest(at: coordinate.coordinate, waypoints: planner.orderedWaypoints,
-                                                           stages: planner.stages, routeLegs: currentRouteLegs)
+            let contexts = [planner] + planner.lodgingTours.compactMap { planner.tourPlanners[$0.id] }
+            suggestion = PhotoAssignmentSuggester.suggest(at: coordinate.coordinate, contexts: contexts.map {
+                PhotoAssignmentSuggester.Context(waypoints: $0.orderedWaypoints, stages: $0.stages,
+                                                 routeLegs: currentRouteLegs(for: $0))
+            })
         } else {
             suggestion = nil
         }
@@ -417,7 +895,7 @@ final class TripLibrary: ObservableObject {
     }
 
     @discardableResult
-    func addPhotoLocationAsWaypoint(photoID: TripPhoto.ID, tripID: RoadTrip.ID) throws -> RoadStop {
+    func addPhotoLocationAsWaypoint(photoID: TripPhoto.ID, tripID: RoadTrip.ID, tourID: UUID? = nil) throws -> RoadStop {
         guard selectedID == tripID,
               let photo = trips.first(where: { $0.id == tripID })?.photos.first(where: { $0.id == photoID }) else {
             throw TripPhotoError.photoUnavailable
@@ -425,7 +903,14 @@ final class TripLibrary: ObservableObject {
         guard let coordinate = photo.coordinate else {
             throw TripPhotoError.photoLocationUnavailable
         }
-        guard planner.hasEndpoints else {
+        let targetPlanner: TripPlannerViewModel
+        if let tourID {
+            guard let tourPlanner = planner.tourPlanners[tourID] else { throw TripPhotoError.tripUnavailable }
+            targetPlanner = tourPlanner
+        } else {
+            targetPlanner = planner
+        }
+        guard targetPlanner.hasEndpoints else {
             throw TripPhotoError.routeEndpointsUnavailable
         }
 
@@ -436,13 +921,13 @@ final class TripLibrary: ObservableObject {
         let photoStop = RoadStop(name: name.isEmpty ? "Foto" : name,
                                  subtitle: photo.originalName,
                                  coordinate: coordinate.coordinate)
-        let waypoint = planner.orderedWaypoints.first { $0.distance(to: photoStop) < 50 } ?? photoStop
+        let waypoint = targetPlanner.orderedWaypoints.first { $0.distance(to: photoStop) < 50 } ?? photoStop
         if waypoint.id == photoStop.id {
-            planner.addMapPOI(photoStop)
-            guard planner.orderedWaypoints.contains(where: { $0.id == photoStop.id }) else {
+            targetPlanner.addMapPOI(photoStop)
+            guard targetPlanner.orderedWaypoints.contains(where: { $0.id == photoStop.id }) else {
                 throw TripPhotoError.routeEndpointsUnavailable
             }
-            planner.updateDetails(WaypointDetails(category: .photo), for: photoStop)
+            targetPlanner.updateDetails(WaypointDetails(category: .photo), for: photoStop)
         }
         try updatePhotoAssignment(.waypoint(waypoint.id), photoID: photoID, tripID: tripID)
         return waypoint
@@ -475,6 +960,13 @@ final class TripLibrary: ObservableObject {
         reload()
     }
 
+    func dismissMigrationNotices(for id: RoadTrip.ID) {
+        guard let index = trips.firstIndex(where: { $0.id == id }),
+              !trips[index].migrationNotices.isEmpty else { return }
+        trips[index].migrationNotices = []
+        save()
+    }
+
     func retrySelectedTripSave() {
         saveSelectedTripID(selectedID)
     }
@@ -488,9 +980,8 @@ final class TripLibrary: ObservableObject {
         }
     }
 
-    private var currentRouteLegs: [RouteLeg]? {
-        guard let route = planner.roadPreview,
-              route.orderedStops == planner.stops,
+    private func currentRouteLegs(for planner: TripPlannerViewModel) -> [RouteLeg]? {
+        guard let route = planner.roadPreview, route.orderedStops == planner.stops,
               route.legs.count == max(0, planner.orderedWaypoints.count - 1) else { return nil }
         return route.legs
     }
@@ -531,7 +1022,22 @@ final class TripLibrary: ObservableObject {
 
     private func reload() {
         do {
-            trips = try store.load()
+            var loaded = try store.load()
+            var migrated = false
+            for index in loaded.indices {
+                do {
+                    if let notice = try RoundTripMigration.extractLodgingTours(&loaded[index])
+                        ?? RoundTripMigration.mergeStandalone(&loaded[index]) {
+                        loaded[index].migrationNotices.append(notice)
+                        migrated = true
+                    }
+                    try RoundTripMigration.validate(loaded[index].waypoints)
+                } catch {
+                    throw TripMigrationFailure(tripName: loaded[index].name, reason: error.localizedDescription)
+                }
+            }
+            if migrated { try store.save(loaded) }
+            trips = loaded
             loadError = nil
         } catch {
             loadError = error.localizedDescription

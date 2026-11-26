@@ -36,23 +36,32 @@ struct TripPhotoLibraryView: View {
     @State private var photoMapPosition: MapCameraPosition = .automatic
     @State private var selectedPhotoID: TripPhoto.ID?
     @State private var presentedPhoto: PhotoPopoverSelection?
+    @State private var pendingTransitChange: (() -> Void)?
 
     private var trip: RoadTrip? {
         library.trips.first { $0.id == tripID }
     }
 
     private var assignmentChoices: [PhotoAssignmentChoice] {
-        let waypoints = model.orderedWaypoints.map {
-            PhotoAssignmentChoice(target: .waypoint($0.id), title: "Ort: \($0.name)")
+        let contexts: [(String, TripPlannerViewModel)] = [("Hauptreise", model)] + model.lodgingTours.enumerated().compactMap { index, tour in
+            guard let planner = model.tourPlanners[tour.id],
+                  let anchor = model.orderedWaypoints.first(where: { $0.id == tour.anchorID }) else { return nil }
+            let number = model.lodgingTours.prefix(index).filter { $0.anchorID == tour.anchorID }.count + 1
+            return ("Rundtour \(number) ab \(anchor.name)", planner)
         }
-        let stages = model.stages.map {
-            PhotoAssignmentChoice(target: .stage($0.id), title: "Etappe: \($0.waypoints.first?.name ?? $0.end.name) – \($0.end.name)")
+        return contexts.flatMap { label, planner in
+            let waypoints = planner.orderedWaypoints.map {
+                PhotoAssignmentChoice(target: .waypoint($0.id), title: "\(label) · Ort: \($0.name)")
+            }
+            let stages = planner.stages.map {
+                PhotoAssignmentChoice(target: .stage($0.id), title: "\(label) · Etappe: \($0.waypoints.first?.name ?? $0.end.name) – \($0.end.name)")
+            }
+            let segments = zip(planner.orderedWaypoints, planner.orderedWaypoints.dropFirst()).map { from, to in
+                PhotoAssignmentChoice(target: .routeSegment(from: from.id, to: to.id),
+                                      title: "\(label) · Strecke: \(from.name) – \(to.name)")
+            }
+            return waypoints + stages + segments
         }
-        let routeSegments = zip(model.orderedWaypoints, model.orderedWaypoints.dropFirst()).map { from, to in
-            PhotoAssignmentChoice(target: .routeSegment(from: from.id, to: to.id),
-                                  title: "Strecke: \(from.name) – \(to.name)")
-        }
-        return waypoints + stages + routeSegments
     }
 
     var body: some View {
@@ -126,6 +135,7 @@ struct TripPhotoLibraryView: View {
             .padding()
         }
         .frame(minWidth: 900, minHeight: 600)
+        .modifier(TransitChangeConfirmation(action: $pendingTransitChange))
         .onChange(of: selectedPhotos) { _, items in
             guard !items.isEmpty else { return }
             Task { await importPhotos(items) }
@@ -211,13 +221,29 @@ struct TripPhotoLibraryView: View {
                         .labelStyle(.iconOnly)
                         .help("Foto-Ort auf der Karte anzeigen")
                         .accessibilityIdentifier("show-photo-on-map-\(photo.id.uuidString)")
-                        Button("Als Wegpunkt hinzufügen", systemImage: "mappin.and.ellipse") {
-                            addPhotoLocationAsWaypoint(photo)
+                        if model.lodgingTours.isEmpty {
+                            Button("Als Wegpunkt hinzufügen", systemImage: "mappin.and.ellipse") {
+                                addPhotoLocationAsWaypoint(photo)
+                            }
+                            .labelStyle(.iconOnly)
+                            .help(model.hasEndpoints ? "Foto-Ort als Wegpunkt hinzufügen" : "Lege zuerst Start und Ziel der Reise fest")
+                            .disabled(!model.hasEndpoints)
+                            .accessibilityIdentifier("add-photo-waypoint-\(photo.id.uuidString)")
+                        } else {
+                            Menu("Als Wegpunkt hinzufügen", systemImage: "mappin.and.ellipse") {
+                                Button("Hauptreise") { addPhotoLocationAsWaypoint(photo) }
+                                ForEach(Array(model.lodgingTours.enumerated()), id: \.element.id) { index, tour in
+                                    if let anchor = model.orderedWaypoints.first(where: { $0.id == tour.anchorID }) {
+                                        let number = model.lodgingTours.prefix(index).filter { $0.anchorID == tour.anchorID }.count + 1
+                                        Button("Rundtour \(number) ab \(anchor.name)") {
+                                            addPhotoLocationAsWaypoint(photo, tourID: tour.id)
+                                        }
+                                    }
+                                }
+                            }
+                            .menuStyle(.borderlessButton)
+                            .accessibilityIdentifier("add-photo-waypoint-\(photo.id.uuidString)")
                         }
-                        .labelStyle(.iconOnly)
-                        .help(model.hasEndpoints ? "Foto-Ort als Wegpunkt hinzufügen" : "Lege zuerst Start und Ziel der Reise fest")
-                        .disabled(!model.hasEndpoints)
-                        .accessibilityIdentifier("add-photo-waypoint-\(photo.id.uuidString)")
                     }
                 }
                 assignmentEditor(for: photo)
@@ -240,6 +266,14 @@ struct TripPhotoLibraryView: View {
             ForEach(model.orderedWaypoints) { waypoint in
                 Marker(waypoint.name, coordinate: waypoint.coordinate)
                     .tint(.blue)
+            }
+            ForEach(model.lodgingTours) { tour in
+                if let planner = model.tourPlanners[tour.id] {
+                    ForEach(planner.stops) { waypoint in
+                        Marker("Rundtour: \(waypoint.name)", coordinate: waypoint.coordinate)
+                            .tint(.orange)
+                    }
+                }
             }
             ForEach(trip.photos) { photo in
                 if let coordinate = photo.coordinate {
@@ -308,9 +342,14 @@ struct TripPhotoLibraryView: View {
         }
     }
 
-    private func addPhotoLocationAsWaypoint(_ photo: TripPhoto) {
+    private func addPhotoLocationAsWaypoint(_ photo: TripPhoto, tourID: UUID? = nil, confirmed: Bool = false) {
+        let target = tourID.flatMap { model.tourPlanners[$0] } ?? model
+        if !confirmed && !target.transitLegs.isEmpty {
+            pendingTransitChange = { addPhotoLocationAsWaypoint(photo, tourID: tourID, confirmed: true) }
+            return
+        }
         do {
-            try library.addPhotoLocationAsWaypoint(photoID: photo.id, tripID: tripID)
+            try library.addPhotoLocationAsWaypoint(photoID: photo.id, tripID: tripID, tourID: tourID)
             if let coordinate = photo.coordinate { focusMap(on: coordinate.coordinate, photoID: photo.id) }
         } catch {
             errorMessage = error.localizedDescription
@@ -319,6 +358,12 @@ struct TripPhotoLibraryView: View {
 
     @ViewBuilder
     private func assignmentEditor(for photo: TripPhoto) -> some View {
+        if let assignment = photo.assignment,
+           !assignmentChoices.contains(where: { $0.target == assignment.target }) {
+            Text("Zuordnung nicht mehr verfügbar – bitte überprüfen.")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
         if let assignment = photo.assignment, assignment.status == .suggested {
             HStack {
                 Text("Vorschlag: \(assignmentTitle(assignment.target))")
@@ -338,6 +383,10 @@ struct TripPhotoLibraryView: View {
 
         Picker("Zuordnung", selection: assignmentBinding(for: photo)) {
             Text("Nicht zugeordnet").tag(nil as PhotoAssignmentTarget?)
+            if let assignment = photo.assignment,
+               !assignmentChoices.contains(where: { $0.target == assignment.target }) {
+                Text("Nicht mehr verfügbar: \(assignmentTitle(assignment.target))").tag(Optional(assignment.target))
+            }
             ForEach(assignmentChoices) { choice in
                 Text(choice.title).tag(Optional(choice.target))
             }
@@ -370,6 +419,7 @@ struct TripPhotoLibraryView: View {
     }
 
     private func assignmentTitle(_ target: PhotoAssignmentTarget) -> String {
+        if let choice = assignmentChoices.first(where: { $0.target == target }) { return choice.title }
         switch target {
         case .waypoint(let id):
             return model.orderedWaypoints.first { $0.id == id }.map { "Ort: \($0.name)" } ?? "Entfernter Wegpunkt"
@@ -480,6 +530,7 @@ struct TripPhotoDetailPopover: View {
     @State private var isPreviewHovered = false
     @State private var showDeleteConfirmation = false
     @State private var isDeletingPhoto = false
+    @State private var pendingTransitChange: (() -> Void)?
 
     private var photo: TripPhoto? {
         library.trips.first { $0.id == tripID }?.photos.first { $0.id == photoID }
@@ -494,6 +545,7 @@ struct TripPhotoDetailPopover: View {
                     .frame(width: 620, height: 560)
             }
         }
+        .modifier(TransitChangeConfirmation(action: $pendingTransitChange))
         .alert("Foto konnte nicht aktualisiert werden", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -544,12 +596,27 @@ struct TripPhotoDetailPopover: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Als Wegpunkt hinzufügen", systemImage: "mappin.and.ellipse") {
-                        addPhotoLocationAsWaypoint(photo)
+                    if model === library.planner && !model.lodgingTours.isEmpty {
+                        Menu("Als Wegpunkt hinzufügen", systemImage: "mappin.and.ellipse") {
+                            Button("Hauptreise") { addPhotoLocationAsWaypoint(photo) }
+                            ForEach(Array(model.lodgingTours.enumerated()), id: \.element.id) { index, tour in
+                                if let anchor = model.orderedWaypoints.first(where: { $0.id == tour.anchorID }) {
+                                    let number = model.lodgingTours.prefix(index).filter { $0.anchorID == tour.anchorID }.count + 1
+                                    Button("Rundtour \(number) ab \(anchor.name)") {
+                                        addPhotoLocationAsWaypoint(photo, tourID: tour.id)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Button("Als Wegpunkt hinzufügen", systemImage: "mappin.and.ellipse") {
+                            let tourID = library.planner.tourPlanners.first { $0.value === model }?.key
+                            addPhotoLocationAsWaypoint(photo, tourID: tourID)
+                        }
+                        .disabled(!model.hasEndpoints)
+                        .help(model.hasEndpoints ? "Foto-Ort als Wegpunkt hinzufügen" : "Lege zuerst Start und Ziel der Reise fest")
+                        .accessibilityIdentifier("photo-detail-add-waypoint-\(photo.id.uuidString)")
                     }
-                    .disabled(!model.hasEndpoints)
-                    .help(model.hasEndpoints ? "Foto-Ort als Wegpunkt hinzufügen" : "Lege zuerst Start und Ziel der Reise fest")
-                    .accessibilityIdentifier("photo-detail-add-waypoint-\(photo.id.uuidString)")
                 }
             }
 
@@ -619,9 +686,14 @@ struct TripPhotoDetailPopover: View {
         }
     }
 
-    private func addPhotoLocationAsWaypoint(_ photo: TripPhoto) {
+    private func addPhotoLocationAsWaypoint(_ photo: TripPhoto, tourID: UUID? = nil, confirmed: Bool = false) {
+        let target = tourID.flatMap { library.planner.tourPlanners[$0] } ?? library.planner
+        if !confirmed && !target.transitLegs.isEmpty {
+            pendingTransitChange = { addPhotoLocationAsWaypoint(photo, tourID: tourID, confirmed: true) }
+            return
+        }
         do {
-            let waypoint = try library.addPhotoLocationAsWaypoint(photoID: photo.id, tripID: tripID)
+            let waypoint = try library.addPhotoLocationAsWaypoint(photoID: photo.id, tripID: tripID, tourID: tourID)
             waypointMessage = "Dem Wegpunkt „\(waypoint.name)“ zugeordnet."
         } catch {
             errorMessage = error.localizedDescription

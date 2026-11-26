@@ -7,12 +7,20 @@ struct RoadStop: Identifiable, Equatable, Codable {
     private let latitude: Double
     private let longitude: Double
 
-    init(name: String, subtitle: String, coordinate: CLLocationCoordinate2D) {
-        id = UUID()
+    init(id: UUID = UUID(), name: String, subtitle: String, coordinate: CLLocationCoordinate2D) {
+        self.id = id
         self.name = name
         self.subtitle = subtitle
         latitude = coordinate.latitude
         longitude = coordinate.longitude
+    }
+
+    func newOccurrence() -> RoadStop {
+        RoadStop(name: name, subtitle: subtitle, coordinate: coordinate)
+    }
+
+    func atSamePlace(as stop: RoadStop) -> RoadStop {
+        RoadStop(id: id, name: stop.name, subtitle: stop.subtitle, coordinate: stop.coordinate)
     }
 
     var coordinate: CLLocationCoordinate2D {
