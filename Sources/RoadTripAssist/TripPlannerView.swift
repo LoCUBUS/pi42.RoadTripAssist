@@ -92,6 +92,9 @@ private struct TripWorkspaceView: View {
     @State private var overrunStage: TripStage?
     @State private var stageStopToRemove: RoadStop?
     @State private var showRouteInspector = true
+    @State private var showExchangePrivacy = false
+    @State private var exportError: String?
+    @State private var transferInProgress = false
 
     private var mapStage: TripStage? {
         guard let mapStageID else { return nil }
@@ -145,6 +148,12 @@ private struct TripWorkspaceView: View {
             }
         }
         .frame(minWidth: 1000, minHeight: 650)
+        .disabled(transferInProgress)
+        .overlay {
+            if transferInProgress {
+                ProgressView("Reise wird verarbeitet …").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
         .modifier(TransitChangeConfirmation(action: $pendingTransitChange, message: transitChangeMessage))
         .onChange(of: library.selectedID) { _, _ in
             focusedWaypoint = nil
@@ -245,6 +254,19 @@ private struct TripWorkspaceView: View {
         } message: {
             Text("Das Ziel konnte nicht an Apple Karten übergeben werden.")
         }
+        .alert("Reise mit Originalfotos exportieren?", isPresented: $showExchangePrivacy) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Fortfahren") { exportExchange() }
+        } message: {
+            Text("Die unverschlüsselte Datei enthält Reiseorte, Notizen und originale Fotos einschließlich möglicher GPS- und EXIF-Daten.")
+        }
+        .alert("Import oder Export fehlgeschlagen", isPresented: Binding(
+            get: { exportError != nil }, set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
         .alert("Zwischenziel entfernen?", isPresented: Binding(
             get: { stageStopToRemove != nil },
             set: { if !$0 { stageStopToRemove = nil } }
@@ -296,6 +318,11 @@ private struct TripWorkspaceView: View {
             }
             .accessibilityIdentifier("new-trip")
             .disabled(library.loadError != nil)
+            Button("Reise importieren …", systemImage: "square.and.arrow.down") {
+                requestWaypointAction(.importTrip)
+            }
+            .accessibilityIdentifier("import-trip")
+            .disabled(library.loadError != nil)
 
             if let error = library.loadError {
                 Text("Reisen konnten nicht geladen werden: \(error)")
@@ -310,7 +337,24 @@ private struct TripWorkspaceView: View {
                     set: { if let id = $0, id != library.selectedID { requestWaypointAction(.selectTrip(id)) } }
                 )) {
                     ForEach(library.trips) { trip in
-                        Text(trip.name).tag(trip.id)
+                        HStack {
+                            Text(trip.name)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            if trip.id == library.selectedID {
+                                Menu {
+                                    Button("Reisedatei …") { requestWaypointAction(.exportTrip) }
+                                    Button("HTML-Reisetagebuch …") { requestWaypointAction(.exportHTML) }
+                                } label: {
+                                    Label("Reise exportieren", systemImage: "square.and.arrow.up")
+                                }
+                                .labelStyle(.iconOnly)
+                                .menuStyle(.borderlessButton)
+                                .help("Ausgewählte Reise exportieren")
+                                .accessibilityIdentifier("export-trip")
+                            }
+                        }
+                        .tag(trip.id)
                     }
                 }
                 .listStyle(.sidebar)
@@ -1386,10 +1430,84 @@ private struct TripWorkspaceView: View {
             library.select(id)
         case .newTrip:
             editor = TripEditorDraft()
+        case .importTrip:
+            importExchange()
+        case .exportTrip:
+            showExchangePrivacy = true
+        case .exportHTML:
+            exportHTML()
         case .editTrip(let trip):
             editor = TripEditorDraft(trip: trip)
         case .showRoute:
             showStages = false
+        }
+    }
+
+    private func importExchange() {
+        let panel = NSOpenPanel()
+        panel.title = "Reise importieren"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        transferInProgress = true
+        Task {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+                transferInProgress = false
+            }
+            do {
+                try await library.importTrip(from: url)
+            } catch {
+                exportError = error.localizedDescription
+            }
+        }
+    }
+
+    private func exportExchange() {
+        guard let trip = library.selectedTrip else { return }
+        let panel = NSSavePanel()
+        panel.title = "Reise exportieren"
+        panel.nameFieldStringValue = "\(trip.name).roadtrip"
+        panel.isExtensionHidden = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard url.pathExtension.lowercased() == "roadtrip" else {
+            exportError = "Der Dateiname muss mit .roadtrip enden."
+            return
+        }
+        transferInProgress = true
+        Task {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+                transferInProgress = false
+            }
+            do {
+                try await library.exportTrip(trip, to: url)
+            } catch {
+                exportError = error.localizedDescription
+            }
+        }
+    }
+
+    private func exportHTML() {
+        guard let trip = library.selectedTrip else { return }
+        let panel = NSSavePanel()
+        panel.title = "Ordner für HTML-Reisetagebuch wählen"
+        panel.nameFieldStringValue = "\(trip.name) – Reisetagebuch"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        transferInProgress = true
+        Task {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+                transferInProgress = false
+            }
+            do {
+                try await library.exportHTML(trip, to: url)
+            } catch {
+                exportError = error.localizedDescription
+            }
         }
     }
 
@@ -2226,7 +2344,8 @@ struct WaypointAppearance {
 }
 
 private enum WaypointEditorAction {
-    case close, open(RoadStop), openStageBudget(RoadStop), selectTrip(RoadTrip.ID), newTrip, editTrip(RoadTrip), showRoute
+    case close, open(RoadStop), openStageBudget(RoadStop), selectTrip(RoadTrip.ID), newTrip, importTrip, exportTrip,
+         exportHTML, editTrip(RoadTrip), showRoute
 }
 
 private final class WaypointEditorDraft: ObservableObject, Identifiable {

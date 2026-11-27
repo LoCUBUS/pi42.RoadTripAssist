@@ -14,10 +14,13 @@
 		2EDB380FBBF2729C62819EB0 /* RouteOptimizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E43AA426E6CDDF28B43F998 /* RouteOptimizer.swift */; };
 		4473C72087F132A2C743A192 /* TripPhoto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17A419545154A27734E4F0C5 /* TripPhoto.swift */; };
 		6AD337D0E4406AC89C72D463 /* TripPlannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 255349A8D6F510A417679431 /* TripPlannerView.swift */; };
+		7F6BFB4A732B743748D3353A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 83043255FC5211BBF28CC2BB /* ZIPFoundation */; };
 		83F58EF69F785D45EDCFF2CF /* TripPlannerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70AAFE57B3930D5ABCF3E30A /* TripPlannerViewModel.swift */; };
 		9505B58208B62FF6A5057FFB /* TripLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */; };
+		9878FC73CAE9A92C20E11E09 /* TripHTMLExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E25490D45F85A0F7E5DF9C6 /* TripHTMLExport.swift */; };
 		DBD665A069F4B9E1BC91A7FB /* RoadStop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 065A15EDB1861AD95F3A9114 /* RoadStop.swift */; };
 		FB1350A3F1E1B7CA8B27E4B6 /* TripPhotoLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE4035B7CEF995E6DDD27D5 /* TripPhotoLibraryView.swift */; };
+		FE879F2C53E6DB89F4524618 /* TripExchange.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F026029FC920B69F3B978AC /* TripExchange.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -35,6 +38,8 @@
 		17A419545154A27734E4F0C5 /* TripPhoto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPhoto.swift; sourceTree = "<group>"; };
 		1DE4035B7CEF995E6DDD27D5 /* TripPhotoLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPhotoLibraryView.swift; sourceTree = "<group>"; };
 		255349A8D6F510A417679431 /* TripPlannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPlannerView.swift; sourceTree = "<group>"; };
+		2E25490D45F85A0F7E5DF9C6 /* TripHTMLExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripHTMLExport.swift; sourceTree = "<group>"; };
+		3F026029FC920B69F3B978AC /* TripExchange.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripExchange.swift; sourceTree = "<group>"; };
 		4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripLibrary.swift; sourceTree = "<group>"; };
 		70AAFE57B3930D5ABCF3E30A /* TripPlannerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPlannerViewModel.swift; sourceTree = "<group>"; };
 		7E43AA426E6CDDF28B43F998 /* RouteOptimizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteOptimizer.swift; sourceTree = "<group>"; };
@@ -45,6 +50,17 @@
 		E4A352124B479A75B40E2B98 /* MapKitRouteService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapKitRouteService.swift; sourceTree = "<group>"; };
 		EABD245856A3D8E2B4496EF5 /* RoadTripAssistApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripAssistApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		213D4DD09C61FF0EB1D5A9A9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7F6BFB4A732B743748D3353A /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		18502FB2B053D23CE19B329F /* Products */ = {
@@ -82,6 +98,8 @@
 				065A15EDB1861AD95F3A9114 /* RoadStop.swift */,
 				EABD245856A3D8E2B4496EF5 /* RoadTripAssistApp.swift */,
 				7E43AA426E6CDDF28B43F998 /* RouteOptimizer.swift */,
+				3F026029FC920B69F3B978AC /* TripExchange.swift */,
+				2E25490D45F85A0F7E5DF9C6 /* TripHTMLExport.swift */,
 				4D2A61F8A517AD78923CFE3B /* TripLibrary.swift */,
 				17A419545154A27734E4F0C5 /* TripPhoto.swift */,
 				1DE4035B7CEF995E6DDD27D5 /* TripPhotoLibraryView.swift */,
@@ -118,6 +136,7 @@
 			buildConfigurationList = 1858D5C280939B70B06B4354 /* Build configuration list for PBXNativeTarget "RoadTripAssist" */;
 			buildPhases = (
 				256D421E7B2B402B754090D3 /* Sources */,
+				213D4DD09C61FF0EB1D5A9A9 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -125,6 +144,7 @@
 			);
 			name = RoadTripAssist;
 			packageProductDependencies = (
+				83043255FC5211BBF28CC2BB /* ZIPFoundation */,
 			);
 			productName = RoadTripAssist;
 			productReference = A05B39EF8A16A119328D65CF /* RoadTripAssist.app */;
@@ -153,6 +173,9 @@
 			);
 			mainGroup = 5F80B0F54919C65DB42C6D64;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1360DFB7DA6B875ED8D23291 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 18502FB2B053D23CE19B329F /* Products */;
 			projectDirPath = "";
@@ -174,6 +197,8 @@
 				DBD665A069F4B9E1BC91A7FB /* RoadStop.swift in Sources */,
 				1A10BBD238AF486A4344FA0E /* RoadTripAssistApp.swift in Sources */,
 				2EDB380FBBF2729C62819EB0 /* RouteOptimizer.swift in Sources */,
+				FE879F2C53E6DB89F4524618 /* TripExchange.swift in Sources */,
+				9878FC73CAE9A92C20E11E09 /* TripHTMLExport.swift in Sources */,
 				9505B58208B62FF6A5057FFB /* TripLibrary.swift in Sources */,
 				4473C72087F132A2C743A192 /* TripPhoto.swift in Sources */,
 				FB1350A3F1E1B7CA8B27E4B6 /* TripPhotoLibraryView.swift in Sources */,
@@ -414,6 +439,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1360DFB7DA6B875ED8D23291 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.9.21;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		83043255FC5211BBF28CC2BB /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1360DFB7DA6B875ED8D23291 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 0FA9288578D30DD292AFF447 /* Project object */;
 }

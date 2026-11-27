@@ -732,6 +732,49 @@ final class TripLibrary: ObservableObject {
         trips.first { $0.id == selectedID }
     }
 
+    func exportTrip(_ trip: RoadTrip, to url: URL) async throws {
+        guard loadError == nil else { throw TripPhotoError.tripUnavailable }
+        let photoStore = self.photoStore
+        try await Task.detached { try TripExchange.export(trip, photoStore: photoStore, to: url) }.value
+    }
+
+    func exportHTML(_ trip: RoadTrip, to url: URL) async throws {
+        guard loadError == nil, selectedID == trip.id else { throw TripPhotoError.tripUnavailable }
+        try await TripHTMLExport.export(trip: trip, planner: planner, photoStore: photoStore, to: url)
+    }
+
+    func importTrip(from url: URL) async throws {
+        guard loadError == nil else { throw TripPhotoError.tripUnavailable }
+        let manager = FileManager.default
+        try manager.createDirectory(at: photoStore.mediaDirectory, withIntermediateDirectories: true)
+        let staging = try TemporaryExportDirectory.create(in: photoStore.mediaDirectory, prefix: "import")
+        var movedDirectory: URL?
+        do {
+            var trip = try await Task.detached { try TripExchange.read(from: url, into: staging) }.value
+            guard loadError == nil else { throw TripPhotoError.tripUnavailable }
+            repeat { trip.id = UUID() } while trips.contains(where: { $0.id == trip.id })
+            let directory = photoStore.mediaDirectory.appendingPathComponent(trip.id.uuidString, isDirectory: true)
+            guard !manager.fileExists(atPath: directory.path) else {
+                throw TripExchangeError.invalid("Der Medienordner der importierten Reise existiert bereits.")
+            }
+            try manager.moveItem(at: staging, to: directory)
+            movedDirectory = directory
+            try store.save(trips + [trip])
+            trips.append(trip)
+            saveError = nil
+            select(trip.id)
+        } catch {
+            do {
+                for directory in [staging, movedDirectory].compactMap({ $0 }) where manager.fileExists(atPath: directory.path) {
+                    try manager.removeItem(at: directory)
+                }
+            } catch let cleanupError {
+                throw TripExchangeError.rollback(cleanupError.localizedDescription)
+            }
+            throw error
+        }
+    }
+
     func select(_ id: RoadTrip.ID) {
         guard id != selectedID, let trip = trips.first(where: { $0.id == id }) else { return }
         selectedID = id

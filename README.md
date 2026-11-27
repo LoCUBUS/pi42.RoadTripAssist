@@ -63,7 +63,7 @@ transit handoff, and changing the trip type. They also check choosing a main
 journey or one of several tours for a map POI, preventing duplicates per
 context, reopening the trip, editing tour waypoint details, and protecting
 unsaved tour edits.
-The latest full Swift run executed 101 tests with no failures; four optional
+The latest full Swift run executed 107 tests with no failures; four optional
 live MapKit tests were skipped. The latest full UI run executed 26 tests with
 no failures; the optional Apple Maps smoke test was skipped.
 An additional UI regression test verifies that combined-map tour markers remain
@@ -71,6 +71,13 @@ present before and after main-journey routing and after reopening; it passed
 after the marker fix. The full UI suite above predates this additional test.
 The system Photos and file pickers and every hover animation are not covered by
 these automated tests.
+The exchange and HTML save/open panels and the exchange privacy confirmation
+have a separate UI test that opens and cancels them; choosing a file in those
+system panels is not automated. The export menu is checked in the selected
+trip row and its unsaved-edit safeguard is exercised. Swift tests cover exchange
+roundtrips with photos and lodging tours, including preserving and correcting
+unavailable photo assignments, import rollback and malformed or oversized
+archives, plus local WebKit loading and photo metadata removal for HTML export.
 On multi-monitor setups, screenshot tests move their test window to the main
 display.
 Default tests neither use real trips nor launch Apple Maps.
@@ -268,8 +275,30 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   assignments are saved with the trip. Photo files and metadata are stored
   locally. If a photo location is added as a waypoint and routing is enabled,
   its coordinates are sent to Apple as part of the routing request. Map display
-  also uses Apple MapKit. When offline HTML export is added, it must not expose
-  GPS/EXIF coordinates unintentionally.
+  also uses Apple MapKit.
+- Use the export icon beside the selected trip → "Reisedatei …" to save it as a `.roadtrip` file;
+  "Reise importieren …" adds it to the local library as a new independent copy.
+  Export again to transfer subsequent changes. Existing trips are not replaced
+  or synchronized, and opening the file directly in Finder is not supported.
+  The ZIP-based version 1 format contains the complete trip and original photo
+  copies, including any GPS/EXIF metadata. It is not encrypted. It may therefore
+  expose private locations, notes and photos to anyone with the file.
+  Calculated routes and routing consent are not included. Photo assignments to
+  removed waypoints, stages or segments remain unchanged, are marked as no
+  longer available in the photo manager, and can be reassigned there. Missing
+  photos, unsupported versions and invalid archives
+  are reported rather than silently imported. The limits are 10,000 photos, 100 MiB
+  per photo, 10 MiB for the manifest and 1 GiB of uncompressed data in total.
+- Use the export icon → "HTML-Reisetagebuch …" to create a new folder containing
+  `index.html`, stage and lodging-tour pages, a stylesheet and a `media` folder.
+  Open the overview in a browser; no network resources are required. The route
+  is a static schematic, not a street or city map. Calculated road geometry is included
+  when available; missing routes and transit legs appear as dashed straight
+  lines. Before distributing this feature, the applicable Apple Maps terms
+  must be reviewed for the exported route geometry, location data and any future map
+  imagery. HTML photos are converted to PNG with a maximum dimension of 4096
+  pixels and without original GPS/EXIF metadata; a missing photo is noted.
+  The HTML still contains trip locations and notes and is not an import format.
 - Opt into automatic routing to calculate connections in the current
   order after waypoint changes. For a selected trip, the "Reihenfolge
   optimieren" symbol remains visible next to the automatic-routing control;
@@ -330,8 +359,7 @@ ROADTRIP_LIVE_POI=1 swift test --filter testLiveNearbyPOIsIncludeUnboundCoffee
   if used as a replacement. Results can be located on the map, but do not
   change the original waypoint; walking routes and access are not verified.
 - The documentation-based external provider comparison and its deferred
-  live tests are recorded in [plan.md](plan.md). Photo management is available;
-  offline HTML export is not implemented yet.
+  live tests are recorded in [plan.md](plan.md).
 
 ## Plan and follow stages
 

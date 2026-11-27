@@ -6,6 +6,43 @@ import XCTest
 
 final class RoadTripAssistUITests: XCTestCase {
     @MainActor
+    func testExchangeAndHTMLDialogsCanBeOpenedAndCancelled() throws {
+        continueAfterFailure = false
+        let (app, _) = try makeTestApp()
+        defer { app.terminate() }
+        app.launchArguments += ["--ui-testing-stages", "--ui-testing-main-display"]
+        launchPlanner(app)
+        app.buttons["import-trip"].click()
+        let cancel = app.buttons["CancelButton"].firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.click()
+        let menu = app.descendants(matching: .menuButton)["export-trip"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        let selectedTrip = app.staticTexts["Etappenreise"].firstMatch
+        XCTAssertTrue(selectedTrip.exists)
+        XCTAssertLessThan(abs(menu.frame.midY - selectedTrip.frame.midY), 15)
+        menu.click()
+        app.menuItems["Reisedatei …"].click()
+        let proceed = app.buttons["Fortfahren"]
+        XCTAssertTrue(proceed.waitForExistence(timeout: 5))
+        proceed.click()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.click()
+        menu.click()
+        app.menuItems["HTML-Reisetagebuch …"].click()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.click()
+        XCTAssertTrue(app.buttons["new-trip"].exists)
+        createTrip(in: app)
+        let newTrip = app.staticTexts["Testreise"].firstMatch
+        XCTAssertTrue(newTrip.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.descendants(matching: .menuButton).matching(identifier: "export-trip").count, 1)
+        XCTAssertLessThan(abs(menu.frame.midY - newTrip.frame.midY), 15)
+        selectedTrip.click()
+        XCTAssertLessThan(abs(menu.frame.midY - selectedTrip.frame.midY), 15)
+    }
+
+    @MainActor
     func testCombinedMapKeepsTourMarkersBeforeAndAfterMainRouting() throws {
         continueAfterFailure = false
         let (app, _) = try makeTestApp()
@@ -444,6 +481,11 @@ final class RoadTripAssistUITests: XCTestCase {
         app.buttons["Weiter bearbeiten"].click()
         assertValue("00:25", of: stay)
         app.buttons["new-trip"].click()
+        XCTAssertTrue(app.sheets["alert"].buttons["Weiter bearbeiten"].waitForExistence(timeout: 5))
+        app.buttons["Weiter bearbeiten"].click()
+        assertValue("00:25", of: stay)
+        app.descendants(matching: .menuButton)["export-trip"].click()
+        app.menuItems["HTML-Reisetagebuch …"].click()
         XCTAssertTrue(app.sheets["alert"].buttons["Weiter bearbeiten"].waitForExistence(timeout: 5))
         app.buttons["Weiter bearbeiten"].click()
         assertValue("00:25", of: stay)

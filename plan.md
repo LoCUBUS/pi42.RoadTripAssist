@@ -1,8 +1,10 @@
 # RoadTripAssist – Implementierungsplan
 
-**Aktueller Stand:** Phasen 0–5 sind für den Prototyp funktional umgesetzt. Etappen, Fotoverwaltung, Budget- und Übernachtungssuche, Wegpunktkategorien, Fußmodus, Rundtouren und ÖPNV-Schätzungen sowie die UI-Zwischenphase sind vorhanden. Unterkunftstouren werden unabhängig von der Hauptreise gespeichert und berechnet; eigenständige Rundtouren haben genau eine Etappe. Die zuletzt ausgewählte Reise und das optionale Reisestartdatum werden wiederhergestellt. Die Routenberechnung aktualisiert die aktuelle Reihenfolge inkrementell; Optimierung und Anzeige alternativer Verbindungen werden separat ausgelöst. Der letzte vollständige Swift-Testlauf umfasste 101 Tests ohne Fehler; vier optionale Live-MapKit-Tests wurden übersprungen. Die vollständige UI-Suite umfasste 26 Tests ohne Fehler; der optionale Apple-Karten-Smoke-Test wurde übersprungen. System-Foto- und Dateidialoge sowie sämtliche Hover-Animationen sind nicht vollständig automatisiert abgenommen. Screenshot-Tests positionieren ihr Testfenster auf dem Hauptmonitor. Eine umfassende Sichtprüfung der Darstellung in Hell-/Dunkelmodus, mit Bedienungshilfen und kleinen Fenstern bleibt Teil der Qualitätsrunde in Phase 7.
+**Aktueller Stand:** Phasen 0–5 sind für den Prototyp funktional umgesetzt; Phase 6 ist teilweise umgesetzt. Etappen, Fotoverwaltung, Budget- und Übernachtungssuche, Wegpunktkategorien, Fußmodus, Rundtouren und ÖPNV-Schätzungen sowie die UI-Zwischenphase sind vorhanden. Unterkunftstouren werden unabhängig von der Hauptreise gespeichert und berechnet; eigenständige Rundtouren haben genau eine Etappe. Die zuletzt ausgewählte Reise und das optionale Reisestartdatum werden wiederhergestellt. Der HTML-Export und das Reiseaustauschformat sind ergänzt; die echte Offline-Karte fehlt noch. Die Routenberechnung aktualisiert die aktuelle Reihenfolge inkrementell; Optimierung und Anzeige alternativer Verbindungen werden separat ausgelöst. Der letzte vollständige Swift-Testlauf umfasste 107 Tests ohne Fehler; vier optionale Live-MapKit-Tests wurden übersprungen. Die vollständige UI-Suite umfasste 26 Tests ohne Fehler; der optionale Apple-Karten-Smoke-Test wurde übersprungen. Die zusätzlichen Exportdialoge wurden separat auf Öffnen und Abbrechen geprüft; die Dateiauswahl selbst wurde nicht automatisiert. System-Foto- und Dateidialoge sowie sämtliche Hover-Animationen sind nicht vollständig automatisiert abgenommen. Screenshot-Tests positionieren ihr Testfenster auf dem Hauptmonitor. Eine umfassende Sichtprüfung der Darstellung in Hell-/Dunkelmodus, mit Bedienungshilfen und kleinen Fenstern bleibt Teil der Qualitätsrunde in Phase 7.
 
-**Als Nächstes:** Phase 6 – Offline-Export. Der Google-/Mapbox-Livevergleich folgt in Phase 8; die Untersuchung und eine mögliche Google-Implementierung folgen am Ende in Phase PI. Vor Veröffentlichung bleibt die Prüfung der Apple-Vorgaben für alternative Routenanfragen und den Cache offen.
+**Als Nächstes:** Die fehlende Offline-Karte aus Phase 6 und Phase 7 – Qualitäts- und Datenschutzrunde. Phase 6 umfasst den Offline-HTML-Export und den Reiseaustausch. Der Google-/Mapbox-Livevergleich folgt in Phase 8; die Untersuchung und eine mögliche Google-Implementierung folgen am Ende in Phase PI. Vor Veröffentlichung bleibt die Prüfung der Apple-Vorgaben für alternative Routenanfragen und den Cache offen.
+
+Für eine echte Offline-Karte im HTML-Export fehlen eine geeignete Kartenquelle und die Prüfung der zugehörigen Nutzungsrechte. Die [Apple-Maps-Bedingungen](https://developer.apple.com/support/terms/apple-developer-program-license-agreement/) (Attachment 6, Abschnitte 2.4 und 2.5) zur Speicherung und Darstellung von Kartendaten sind auch für die bereits exportierte Routengeometrie und Ortsdaten vor Veröffentlichung zu prüfen; ein MapKit-Snapshot ist keine automatisch geklärte Offline-Lizenz. [OpenStreetMap-Daten](https://www.openstreetmap.org/copyright) sind offen lizenziert, aber die [öffentlichen OSM-Kachelserver](https://operations.osmfoundation.org/policies/tiles/) erlauben keine Offline-Vorabdownloads. Eine alternative Karte allein klärt zudem die Nutzung der Apple-Routen- und Ortsdaten nicht.
 
 **UI-Zwischenphase:** Die Mindestversion ist auf macOS 27 angehoben. Die App
 verwendet ein natives Split-View-Fenster mit größenveränderlicher Reiseseitenleiste
@@ -21,7 +23,8 @@ sind für die überarbeitete Oberfläche noch gesondert visuell zu prüfen.
 - Reisedaten zunächst lokal auf dem Mac.
 - Google Routes API und Mapbox erst am Ende mit Beispieldaten praktisch vergleichen; über einen produktiven externen Routinganbieter und die Übertragung realer Wegpunktkoordinaten wird nicht vorher entschieden.
 - Foto-GPS-Zuordnung wird vorgeschlagen, aber vom Nutzer bestätigt, nicht stillschweigend ausgeführt.
-- Der Export muss offline funktionieren: Übersichtsseite, Unterseite je Etappe und separater Medienordner.
+- Der HTML-Export muss offline funktionieren: Übersichtsseite, Unterseite je Etappe und separater Medienordner.
+- Einzelne Reisen einschließlich Fotos sollen sich über eine Datei zwischen Rechnern austauschen und wieder in die lokale Bibliothek importieren lassen.
 
 ## 2. Karten- und Routingoptionen
 
@@ -98,8 +101,9 @@ Ein erneuter MapKit-Lauf für die öffentliche Mailand-Testreise lieferte eine V
 - Etappen mit frei wählbarem Zeitbudget und Übernachtungs-POI.
 - Reiseablauf mit Überspringen, Notizen und Bewertungen.
 
-### Weitere Ausbaustufen – offen
+### Weitere Ausbaustufen – Phase 6
 - Offline-HTML-Reisetagebuch mit Übersichts- und Etappenseiten.
+- Wieder importierbares Austauschformat für einzelne Reisen einschließlich Fotos.
 
 **Optimierungsregeln im Prototyp:** Ohne Übernachtungsanker sind alle Zwischenstopps frei umsortierbar. Markierte Übernachtungen bilden feste Etappengrenzen; die Optimierung sortiert nur zwischen diesen Ankern. Öffnungszeiten, Zeitfenster und Prioritäten fließen nicht ein. Das Zeitbudget ist ein Planungshinweis, keine Nebenbedingung des Optimierers. Vorschläge bleiben überprüfbar und manuell änderbar.
 
@@ -179,7 +183,7 @@ Der gerichtete Teilstrecken-Cache lebt nur im Speicher und hat keine Ablaufzeit;
 - EXIF-Aufnahmezeit einschließlich vorhandenem Zeitzonenoffset und GPS-Koordinaten werden lokal ausgelesen. GPS schlägt zuerst einen Wegpunkt im Umkreis von 2 km, dann einen Streckenabschnitt im Umkreis von 2 km und sonst eine Etappe vor, wenn der nächste Wegpunkt höchstens 20 km entfernt ist. Ohne GPS gibt es keinen automatischen Vorschlag.
 - Fotos mit GPS-Daten erscheinen auf der Routenkarte und in der Fotoverwaltung als kleine Karten-Thumbnails. Liegt ein Foto höchstens 25 m von einem Wegpunkt entfernt, bewegt es sich beim Überfahren animiert zur Seite; der Wegpunkt behält seinen Standardmarker und seine Position. Eine Linie zeigt zurück zum Wegpunkt. Ein Klick öffnet eine größere Vorschau mit Bildbeschreibung, Wegpunkt-Aktion und bestätigungspflichtiger Löschfunktion; die symbolischen Drehfunktionen erscheinen nur beim Überfahren der oberen Bildecken. In der Fotoverwaltung lässt sich zusätzlich der Marker fokussieren. Drehungen werden als Vierteldrehungen mit dem Fotodatensatz gespeichert und verändern die Originalkopie nicht. Bei gesetztem Start und Ziel kann der Foto-Ort als Zwischenziel hinzugefügt werden; ein vorhandener Wegpunkt innerhalb von 50 m wird wiederverwendet und das Foto diesem Wegpunkt bestätigt zugeordnet.
 - Vorschläge bleiben unbestätigt, bis „Übernehmen“ gewählt wird. Die Zuordnung kann stattdessen manuell einer Etappe, einem Wegpunkt oder einem Streckenabschnitt zugewiesen oder aufgehoben werden. Bildbeschreibungen, Aufnahmedaten, Koordinaten und bestätigte Zuordnungen werden lokal mit der Reise gespeichert.
-- Die Bilddatei einschließlich ihrer ursprünglichen EXIF-Daten bleibt lokal. Wird ein Foto-Ort als Wegpunkt verwendet und Routing aktiviert, werden seine Koordinaten für die Routenanfrage an Apple übertragen; auch die Kartenanzeige verwendet Apple MapKit. Der Offline-Export folgt in Phase 6 und muss GPS-/EXIF-Koordinaten standardmäßig entfernen.
+- Die Bilddatei einschließlich ihrer ursprünglichen EXIF-Daten bleibt lokal. Wird ein Foto-Ort als Wegpunkt verwendet und Routing aktiviert, werden seine Koordinaten für die Routenanfrage an Apple übertragen; auch die Kartenanzeige verwendet Apple MapKit. Der HTML-Export folgt in Phase 6 und muss GPS-/EXIF-Koordinaten standardmäßig entfernen; das verlustfreie Austauschformat enthält dagegen die originalen Fotokopien einschließlich vorhandener Metadaten.
 
 ### Phase 5 – Fußmodus und Rundtouren (funktional abgeschlossen)
 - Start-Ziel-Reisen und einteilige eigenständige Rundtouren; mehrere getrennt gespeicherte und berechnete Unterkunftstouren können an einem Übernachtungsort eingefügt und inline bearbeitet werden. Eine Gesamtsumme erscheint nur bei vollständiger Berechnung. Ältere Touren werden atomar migriert; bei uneindeutigen Daten wird nichts überschrieben.
@@ -189,14 +193,24 @@ Der gerichtete Teilstrecken-Cache lebt nur im Speicher und hat keine Ablaufzeit;
 - Die Reihenfolgeoptimierung berücksichtigt ÖPNV nur für markierte gerichtete Nachbarpaare; beim Umordnen entfallende Markierungen werden nach Hinweis entfernt. Beim Wechsel auf Fahren bleiben sie für einen möglichen Rückwechsel gespeichert, solange die Punkte benachbart bleiben.
 - Für alle Legs gilt weiterhin das gleiche optionale Reisestartdatum; ÖPNV-Zeiten sind nicht zu einem Fahrplan abgestimmt. Fehlende Zeiten und Geometrien werden nicht erfunden.
 
-### Phase 6 – Offline-HTML-Export
+### Phase 6 – Offline-HTML-Export und Reiseaustausch (teilweise umgesetzt)
+
+**Offline-HTML-Reisetagebuch**
 - Exportstruktur erzeugen: `index.html` als Reiseübersicht, Unterseite je Etappe sowie lokaler `media/`-Ordner.
-- CSS, JavaScript, Bilder und Kartenansicht lokal ausliefern; keine externen Schrift-, Kartenkachel-, Skript- oder Bild-URLs.
-- Für Offline-Karte eine statische lokale Routendarstellung (z. B. generierte SVG/PNG-Karte) verwenden; keine interaktive Karte voraussetzen, die online Tiles nachlädt.
-- Export im Finder/Browser ohne Netz testen und auf fehlende Medien verweisen.
+- Der aktuelle Export liefert CSS, Bilder und eine statische SVG-Routenskizze lokal aus; es gibt keine externen Schrift-, Kartenkachel-, Skript- oder Bild-URLs.
+- Eine echte Straßen- oder Stadtkarte fehlt weiterhin. Karten- und Routendatenquelle einschließlich Nutzungsrechten klären; die Offline-Anforderung bleibt bestehen.
+- Das lokale Laden der Übersicht wird mit WebKit getestet; fehlende Medien werden im Export ausgewiesen. Eine vollständige manuelle Browserprüfung ohne Netz bleibt offen.
+
+**Wieder importierbare Reise**
+- Eine ausgewählte Reise über einen nativen Speichern-Dialog in eine einzelne `.roadtrip`-Datei exportieren und über einen Öffnen-Dialog in die lokale Reisebibliothek importieren. Das ist ein Austauschformat und keine direkte Bearbeitung der Datei; spätere Änderungen erfordern einen erneuten Export. Finder-Dateizuordnung, Synchronisierung und Zusammenführen sind nicht Bestandteil der ersten Version.
+- Ein versioniertes ZIP-basiertes Containerformat mit Manifest, Reisedaten und allen zugehörigen Fotodateien definieren. Reiseeinstellungen, Wegpunkte, Rundtouren, ÖPNV-Markierungen, Notizen, Fortschritt, Fotometadaten und Zuordnungen verlustfrei erhalten. Berechnete Routen, Cache und Routing-Zustimmung werden wie bisher nicht gespeichert und müssen bei Bedarf erneut ermittelt beziehungsweise eingeholt werden.
+- Der Import erstellt eine eigenständige lokale Kopie mit neuer Reise-ID und ersetzt keine vorhandenen Reisen oder Medien. Interne Referenzen und Fotozuordnungen bleiben konsistent; Medien werden unter der neuen Reise-ID abgelegt. Ersetzen und Zusammenführen sind nicht Teil der ersten Version.
+- Formatversion und Inhalt prüfen; unterstützte ältere Daten unter Verwendung der bestehenden fachlichen Migration und Validierung übernehmen, unbekannte neuere Versionen verständlich ablehnen. Nicht mehr auflösbare Fotozuordnungen bleiben wie in der App unverändert erhalten; fehlende Medien und Schreibfehler werden ausdrücklich gemeldet. Archivpfade und Größen begrenzen und unsichere Einträge ablehnen; Import vorbereiten und bei Fehlern vollständig zurückrollen, ohne die bestehende Bibliothek zu beschädigen.
+- Austauschdateien sind nicht verschlüsselt und enthalten persönliche Reiseinformationen und originale Fotokopien einschließlich möglicher GPS-/EXIF-Daten. Vor dem Export darauf hinweisen und den Unterschied zum datenschutzbereinigten HTML-Export dokumentieren. Eine Redaktionsoption oder Verschlüsselung ist nicht Bestandteil der ersten Version.
+- Tests für Export/Import über einen vollständigen Roundtrip einschließlich mehrerer Unterkunftstouren, ÖPNV, Fotozuordnungen und Originaldateien; außerdem wiederholter Import und ID-Konflikte, ältere und unbekannte Formatversionen, beschädigte Archive, fehlende Medien, unsichere Pfade und Größen, Schreibfehler und Rollback. Die Dialogabläufe und das Wiederöffnen der importierten Reise überprüfen.
 
 ### Phase 7 – Qualitäts- und Datenschutzrunde
-- Tests für Trip-Persistenz, Stoppreihenfolge, Optimierungsintegration, Zeitrechnung, Medienzuordnung und Offline-Export.
+- Tests für Trip-Persistenz, Stoppreihenfolge, Optimierungsintegration, Zeitrechnung, Medienzuordnung, Offline-HTML-Export und Reiseaustausch.
 - Providerfehler, API-Limits, leere Suchergebnisse und fehlende Berechtigungen sichtbar und handhabbar machen.
 - Hinweise/Dokumentation zu Netzwerkübertragung von Such- und Routendaten, lokaler Fotokopie und Exportmetadaten.
 - Die modernisierte Oberfläche einschließlich Marker, Liquid Glass, Hell-/Dunkelmodus, Bedienungshilfen und kleiner Fenster visuell prüfen.
@@ -261,7 +275,7 @@ Der gerichtete Teilstrecken-Cache lebt nur im Speicher und hat keine Ablaufzeit;
 - Eine API-Optimierung kann Standortdaten an Dritte übertragen und Kosten erzeugen; Speicherung „lokal“ verhindert das nicht.
 - MapKit ist für eine native macOS-Karte besonders passend, aber die dokumentierte Directions-Schnittstelle bietet keine Gesamtoptimierung und kann Anfragen drosseln.
 - Ein Anbieter für Optimierung und ein anderer für Kartenanzeige können hinsichtlich Lizenz, Darstellung und Abweichungen problematisch sein.
-- Foto-GPS-Daten und offline exportierte Medien sind private Reiseinformationen; Export soll keine unnötigen EXIF-Koordinaten enthalten.
+- Foto-GPS-Daten und exportierte Reisen sind private Informationen. Der HTML-Export soll keine unnötigen EXIF-Koordinaten enthalten; das unverschlüsselte Austauschformat erhält sie für einen verlustfreien Import und benötigt einen klaren Hinweis.
 - Vollständig offline nutzbarer Export ist realistisch; Offline-Kartenrouting innerhalb der App ist **nicht** Teil dieses Plans.
 
 ## 8. Erfolgskriterien
@@ -273,4 +287,4 @@ Der gerichtete Teilstrecken-Cache lebt nur im Speicher und hat keine Ablaufzeit;
 - Etappen lassen sich separat anzeigen, summieren Fahr- und Verweilzeit ohne Doppelzählung und behalten ihre Grenzen bei der Optimierung. Das nächste offene Ziel berücksichtigt besuchte und übersprungene Wegpunkte.
 - Änderungen an Verweilzeiten aktualisieren die Etappenzeit direkt. Ein Budgetpunkt lässt sich bei späterer Übernachtungsankunft nach Bestätigung ausblenden und wieder einblenden, ohne Route oder Warnung zu verändern.
 - **Phase 5 (funktional abgeschlossen):** Fahr- und Fußetappen sowie eigenständige und eingefügte Rundtouren sind lokal speicherbar; ÖPNV-Verbindungen zeigen Schätzungen und schematische Linien und öffnen die Detailplanung in Apple Karten.
-- **Phase 6 (offen):** Ein Export enthält Übersicht, Etappenseiten und Medien und lässt sich ohne Internetverbindung öffnen.
+- **Phase 6 (teilweise umgesetzt):** Ein HTML-Export enthält Übersicht, Etappenseiten und Medien und benötigt keine Netzwerkressourcen; er zeigt bislang nur eine Routenskizze statt einer echten Karte. Eine vollständige einzelne Reise einschließlich Fotos lässt sich als `.roadtrip` exportieren und auf einem anderen Rechner als Kopie importieren, ohne bestehende Daten zu überschreiben.

@@ -2,10 +2,267 @@ import CoreLocation
 import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 import XCTest
+import ZIPFoundation
 @testable import RoadTripAssist
 
 final class TripLibraryTests: XCTestCase {
+    @MainActor
+    func testExchangePreservesUnavailablePhotoAssignments() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = TripPhotoStore(mediaDirectory: directory.appendingPathComponent("source"))
+        let missing = UUID()
+        let start = stop("Start", longitude: 1)
+        let assignments: [PhotoAssignment] = [
+            .init(target: .waypoint(missing), status: .confirmed),
+            .init(target: .stage(missing), status: .suggested),
+            .init(target: .routeSegment(from: UUID(), to: UUID()), status: .confirmed),
+            .init(target: .waypoint(start.id), status: .confirmed)
+        ]
+        let photos = assignments.enumerated().map { index, assignment in
+            TripPhoto(fileExtension: "jpeg", originalName: "Foto \(index + 1).jpeg",
+                      capturedAt: nil, coordinate: nil, assignment: assignment)
+        }
+        let trip = RoadTrip(name: "Reise", notes: "", waypoints: TripWaypoints(
+            start: start, destination: stop("Ziel", longitude: 2)), photos: photos)
+        let image = try makeImageData()
+        for photo in photos { try source.write(image, for: photo, tripID: trip.id) }
+        let archive = directory.appendingPathComponent("reise.roadtrip")
+        try TripExchange.export(trip, photoStore: source, to: archive)
+        let store = TripStore(url: directory.appendingPathComponent("destination/trips.json"))
+        let library = TripLibrary(store: store)
+        try await library.importTrip(from: archive)
+        let imported = try XCTUnwrap(library.selectedTrip)
+        XCTAssertEqual(imported.photos, photos)
+        for photo in photos {
+            XCTAssertEqual(try Data(contentsOf: library.photoURL(for: photo, tripID: imported.id)), image)
+        }
+        XCTAssertEqual(try store.load().first?.photos, photos)
+        let reopened = TripLibrary(store: store)
+        XCTAssertEqual(reopened.selectedTrip?.photos, photos)
+        try reopened.updatePhotoAssignment(.waypoint(start.id), photoID: photos[0].id, tripID: imported.id)
+        let corrected = TripLibrary(store: store)
+        XCTAssertEqual(corrected.selectedTrip?.photos.first?.assignment,
+                       PhotoAssignment(target: .waypoint(start.id), status: .confirmed))
+        XCTAssertEqual(Array(try XCTUnwrap(corrected.selectedTrip).photos.dropFirst()), Array(photos.dropFirst()))
+    }
+
+    @MainActor
+    func testExchangeRoundTripImportsIndependentCopiesWithToursAndOriginalPhotos() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceStore = TripStore(url: directory.appendingPathComponent("source/trips.json"))
+        let destinationStore = TripStore(url: directory.appendingPathComponent("destination/trips.json"))
+        let hotel = stop("Hotel", latitude: 50, longitude: 1)
+        let museum = stop("Museum", latitude: 50, longitude: 1.1)
+        let start = hotel.newOccurrence(), end = hotel.newOccurrence()
+        let tour = LodgingTour(anchorID: hotel.id, waypoints: TripWaypoints(
+            start: start, stops: [museum], destination: end, stageModes: [end.id: .walking],
+            transitLegs: [TransitLeg(from: start.id, to: museum.id)], isRoundTrip: true))
+        let secondTour = LodgingTour(anchorID: hotel.id, waypoints: TripWaypoints(
+            start: hotel.newOccurrence(), destination: hotel.newOccurrence(), isRoundTrip: true))
+        let photo = TripPhoto(fileExtension: "jpg", originalName: "photo.jpg", capturedAt: nil,
+                              coordinate: nil, caption: "Museum",
+                              assignment: PhotoAssignment(target: .waypoint(museum.id), status: .confirmed))
+        let trip = RoadTrip(name: "Reise", notes: "Notiz", waypoints: TripWaypoints(
+            start: stop("Start", latitude: 50, longitude: 0), stops: [hotel],
+            destination: stop("Ziel", latitude: 50, longitude: 2),
+            details: [hotel.id: WaypointDetails(overnight: true)], lodgingTours: [tour, secondTour]), photos: [photo])
+        let image = try makeImageData()
+        try sourceStore.save([trip])
+        try TripPhotoStore(mediaDirectory: sourceStore.mediaDirectory).write(image, for: photo, tripID: trip.id)
+        let archive = directory.appendingPathComponent("reise.roadtrip")
+        try TripExchange.export(trip, photoStore: TripPhotoStore(mediaDirectory: sourceStore.mediaDirectory), to: archive)
+        try TripExchange.export(trip, photoStore: TripPhotoStore(mediaDirectory: sourceStore.mediaDirectory), to: archive)
+        let library = TripLibrary(store: destinationStore)
+        try await library.importTrip(from: archive)
+        try await library.importTrip(from: archive)
+        XCTAssertEqual(library.trips.count, 2)
+        XCTAssertNotEqual(library.trips[0].id, trip.id)
+        XCTAssertNotEqual(library.trips[0].id, library.trips[1].id)
+        for copy in library.trips {
+            XCTAssertEqual(copy.waypoints.lodgingTours.first?.waypoints.transitLegs, tour.waypoints.transitLegs)
+            XCTAssertEqual(copy.waypoints.lodgingTours.map(\.id), [tour.id, secondTour.id])
+            XCTAssertEqual(copy.photos, [photo])
+            XCTAssertEqual(try Data(contentsOf: library.photoURL(for: photo, tripID: copy.id)), image)
+        }
+        XCTAssertEqual(try destinationStore.load().count, 2)
+        let reopened = TripLibrary(store: destinationStore)
+        XCTAssertEqual(reopened.trips.map(\.id), library.trips.map(\.id))
+        XCTAssertEqual(reopened.selectedID, library.selectedID)
+    }
+
+    @MainActor
+    func testExchangeRollsBackMediaIfLibrarySaveFails() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = TripPhotoStore(mediaDirectory: directory.appendingPathComponent("source"))
+        let photo = TripPhoto(fileExtension: "jpg", originalName: "photo.jpg", capturedAt: nil, coordinate: nil)
+        let trip = RoadTrip(name: "Import", notes: "", photos: [photo])
+        try source.write(makeImageData(), for: photo, tripID: trip.id)
+        let archive = directory.appendingPathComponent("reise.roadtrip")
+        try TripExchange.export(trip, photoStore: source, to: archive)
+        let store = TripStore(url: directory.appendingPathComponent("library/trips.json"))
+        let existing = RoadTrip(name: "Bestehend", notes: "")
+        try store.save([existing])
+        let library = TripLibrary(store: store)
+        try FileManager.default.removeItem(at: store.url)
+        try FileManager.default.createDirectory(at: store.url, withIntermediateDirectories: false)
+        do {
+            try await library.importTrip(from: archive)
+            XCTFail("Import hätte beim Speichern fehlschlagen müssen.")
+        } catch {}
+        XCTAssertEqual(library.trips.map(\.id), [existing.id])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.mediaDirectory.path), [])
+    }
+
+    @MainActor
+    func testExchangeRejectsCorruptAndOversizedManifest() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = TripLibrary(store: TripStore(url: directory.appendingPathComponent("trips.json")))
+        let corrupt = directory.appendingPathComponent("corrupt.roadtrip")
+        try Data("not a ZIP".utf8).write(to: corrupt)
+        let boundary = directory.appendingPathComponent("boundary.roadtrip")
+        let validZip = try Archive(url: boundary, accessMode: .create)
+        var trip = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(RoadTrip(name: "Grenze", notes: ""))) as? [String: Any])
+        trip.removeValue(forKey: "photos")
+        var validManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "RoadTripAssist", "version": 1, "trip": trip
+        ])
+        validManifest.append(Data(repeating: 32, count: 10 * 1024 * 1024 - validManifest.count))
+        try validZip.addEntry(with: "manifest.json", type: .file, uncompressedSize: Int64(validManifest.count),
+                              compressionMethod: .deflate) { position, size in
+            validManifest.subdata(in: Int(position)..<Int(position) + size)
+        }
+        try await library.importTrip(from: boundary)
+        XCTAssertEqual(library.trips.count, 1)
+        let oversized = directory.appendingPathComponent("oversized.roadtrip")
+        let zip = try Archive(url: oversized, accessMode: .create)
+        let bytes = Data(repeating: 65, count: 10 * 1024 * 1024 + 1)
+        try zip.addEntry(with: "manifest.json", type: .file, uncompressedSize: Int64(bytes.count),
+                         compressionMethod: .deflate) { position, size in
+            bytes.subdata(in: Int(position)..<Int(position) + size)
+        }
+        for file in [corrupt, oversized] {
+            do {
+                try await library.importTrip(from: file)
+                XCTFail("Ungültiges Archiv wurde importiert.")
+            } catch {}
+            XCTAssertEqual(library.trips.count, 1)
+        }
+    }
+
+    @MainActor
+    func testExchangeRejectsUnsafeEntriesVersionsAndMissingPhotosWithoutChangingLibrary() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripStore(url: directory.appendingPathComponent("trips.json"))
+        let existing = RoadTrip(name: "Vorhanden", notes: "")
+        try store.save([existing])
+        let library = TripLibrary(store: store)
+        let photo = TripPhoto(fileExtension: "jpg", originalName: "a.jpg", capturedAt: nil, coordinate: nil)
+        let trip = RoadTrip(name: "Import", notes: "", photos: [photo])
+        for (index, version, additional) in [(0, 1, "../escape"), (1, 2, ""), (2, 1, "")] {
+            let url = directory.appendingPathComponent("\(index).roadtrip")
+            let zip = try Archive(url: url, accessMode: .create)
+            let testTrip = index == 0 ? RoadTrip(name: "Import", notes: "") : trip
+            let encodedTrip = index == 1 ? [:] : try JSONSerialization.jsonObject(with: JSONEncoder().encode(testTrip))
+            let manifest = try JSONSerialization.data(withJSONObject: [
+                "format": "RoadTripAssist", "version": version, "trip": encodedTrip
+            ])
+            try zip.addEntry(with: "manifest.json", type: .file, uncompressedSize: Int64(manifest.count)) { position, size in
+                manifest.subdata(in: Int(position)..<Int(position) + size)
+            }
+            if !additional.isEmpty {
+                try zip.addEntry(with: additional, type: .file, uncompressedSize: Int64(1)) { _, _ in Data([1]) }
+            }
+            do {
+                try await library.importTrip(from: url)
+                XCTFail("Ungültiges Archiv wurde importiert.")
+            } catch {
+                if index == 1 {
+                    guard case TripExchangeError.unsupportedVersion(2) = error else {
+                        XCTFail("Eine unbekannte Formatversion muss ausdrücklich gemeldet werden: \(error)")
+                        continue
+                    }
+                }
+            }
+            XCTAssertEqual(library.trips.map(\.id), [existing.id])
+            XCTAssertEqual(try store.load().map(\.id), [existing.id])
+        }
+    }
+
+    @MainActor
+    func testHTMLExportIsOfflineEscapesTextAndStripsPhotoMetadata() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = TripPhotoStore(mediaDirectory: directory.appendingPathComponent("photos"))
+        let start = stop("Start", longitude: 1), hotel = stop("Hotel", longitude: 1.5)
+        let end = stop("Ende", longitude: 2), museum = stop("Museum", longitude: 1.6)
+        let tour = LodgingTour(anchorID: hotel.id, waypoints: TripWaypoints(
+            start: hotel.newOccurrence(), stops: [museum], destination: hotel.newOccurrence(), isRoundTrip: true))
+        let photo = TripPhoto(fileExtension: "jpg", originalName: "a.jpg", capturedAt: nil, coordinate: nil,
+                              caption: "<script>", assignment: PhotoAssignment(target: .waypoint(museum.id),
+                                                                                status: .confirmed))
+        let missing = TripPhoto(fileExtension: "jpg", originalName: "missing.jpg", capturedAt: nil, coordinate: nil)
+        let trip = RoadTrip(name: "<Reise>", notes: "A & B", waypoints: TripWaypoints(
+            start: start, stops: [hotel], destination: end,
+            details: [hotel.id: WaypointDetails(overnight: true)], lodgingTours: [tour]), photos: [photo, missing])
+        try store.write(makeImageData(), for: photo, tripID: trip.id)
+        let planner = TripPlannerViewModel()
+        planner.loadWaypoints(trip.waypoints)
+        let output = directory.appendingPathComponent("html")
+        try await TripHTMLExport.export(trip: trip, planner: planner, photoStore: store, to: output)
+        let html = try String(contentsOf: output.appendingPathComponent("index.html"), encoding: .utf8)
+        let stage = try String(contentsOf: output.appendingPathComponent("etappe-1.html"), encoding: .utf8)
+        let tourPage = try String(contentsOf: output.appendingPathComponent("rundtour-1.html"), encoding: .utf8)
+        let css = try String(contentsOf: output.appendingPathComponent("style.css"), encoding: .utf8)
+        XCTAssertTrue(html.contains("&lt;Reise&gt;"))
+        XCTAssertTrue(html.contains("&lt;script&gt;"))
+        XCTAssertTrue(html.contains("Foto fehlt: missing.jpg"))
+        XCTAssertFalse(html.contains("http://") || html.contains("https://"))
+        XCTAssertFalse(stage.contains("http://") || stage.contains("https://"))
+        XCTAssertFalse(css.contains("http://") || css.contains("https://"))
+        XCTAssertTrue(html.contains("etappe-1.html"))
+        XCTAssertTrue(html.contains("rundtour-1.html"))
+        XCTAssertTrue(tourPage.contains(photo.id.uuidString))
+        XCTAssertTrue(stage.contains("<svg"))
+        let image = try XCTUnwrap(CGImageSourceCreateWithURL(
+            output.appendingPathComponent("media/\(photo.id.uuidString).png") as CFURL, nil))
+        let metadata = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [String: Any])
+        XCTAssertNil(metadata[kCGImagePropertyGPSDictionary as String])
+        let exif = metadata[kCGImagePropertyExifDictionary as String] as? [String: Any]
+        XCTAssertNil(exif?[kCGImagePropertyExifDateTimeOriginal as String])
+        let loaded = expectation(description: "Offline HTML page loaded")
+        let delegate = OfflinePageDelegate(finished: { loaded.fulfill() })
+        let browser = WKWebView()
+        browser.navigationDelegate = delegate
+        browser.loadFileURL(output.appendingPathComponent("index.html"), allowingReadAccessTo: output)
+        await fulfillment(of: [loaded], timeout: 10)
+        let title = try await browser.evaluateJavaScript("document.title") as? String
+        XCTAssertEqual(title, "<Reise>")
+        do {
+            try await TripHTMLExport.export(trip: trip, planner: planner, photoStore: store, to: output)
+            XCTFail("Ein vorhandener Ordner wurde überschrieben.")
+        } catch {}
+    }
+
+    private final class OfflinePageDelegate: NSObject, WKNavigationDelegate {
+        let finished: () -> Void
+
+        init(finished: @escaping () -> Void) {
+            self.finished = finished
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            finished()
+        }
+    }
+
     func testStageBudgetUsesHoursAndMinutesWithoutChangingStoredValues() {
         XCTAssertEqual(DurationInputFormat.string(390), "06:30")
         XCTAssertEqual(DurationInputFormat.minutes("06:30"), 390)
